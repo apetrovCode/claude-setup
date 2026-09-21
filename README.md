@@ -97,6 +97,9 @@ Things this repo deliberately cannot reproduce:
 - **Interactive OAuth** for the Atlassian and Slack MCP servers, once per machine, via `/mcp`.
 - **MemPalace data.** The CLI installs from PyPI and the hooks are here, but the palace itself is
   local, large, and holds machine identity. Only the plumbing travels.
+- **Two vendored skills have missing dependencies** and were already broken before this repo
+  existed: `caveman-stats` needs a tracker hook that exists nowhere, and `cavecrew` dispatches to
+  three subagents with no definitions. Details in [skills/README.md](skills/README.md).
 
 ## Layout
 
