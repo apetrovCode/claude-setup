@@ -1,0 +1,60 @@
+# Allowlist, not a denylist.
+#
+# This repo is public and mirrors a directory that other programs write into.
+# A denylist would mean predicting every filename a future Claude Code release
+# invents — session transcripts, oauth artifacts, plugin caches, lock files.
+# Deny everything, then re-admit exactly what belongs here. Unknown files fail
+# closed.
+
+*
+
+!.gitignore
+!.gitattributes
+!README.md
+!LICENSE
+!install.sh
+!bootstrap-linux.sh
+
+!.githooks/
+!.githooks/**
+
+!lib/
+!lib/**
+
+!settings/
+!settings/*.json
+
+!claude/
+!claude/CLAUDE.md
+!claude/statusline-command.sh
+!claude/hooks/
+!claude/hooks/*.sh
+!claude/bin/
+!claude/bin/*.sh
+
+!skills/
+!skills/**
+
+!mcp/
+!mcp/*.json
+
+!dcg/
+!dcg/config.toml
+
+# Only the templates. The real local layer lives at ~/.claude/local/, outside
+# this tree, precisely so it cannot be committed by accident.
+!local/
+!local/README.md
+!local/*.example
+
+# Personal list of words that must never appear in tracked files. It is a list
+# of the things being kept private, so it stays private itself.
+.scrub-words
+
+# Never, under any pattern.
+**/.env
+**/*.key
+**/*.pem
+**/.credentials.json
+**/settings.local.json
+**/local.env

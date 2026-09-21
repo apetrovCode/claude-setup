@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "User-scope MCP servers, registered by install.sh via `claude mcp add-json --scope user`.",
+    "`add-json` rather than `add`, because the github server needs `headersHelper`,",
+    "which plain `claude mcp add` has no flag for.",
+    "",
+    "Tokens are substituted at install time:",
+    "  ${CLAUDE_DIR}            -> ~/.claude",
+    "  ${TERRAFORM_MCP_SERVER}  -> `command -v terraform-mcp-server`",
+    "",
+    "Servers that cannot live here: the macOS desktop-app extensions (Chrome control,",
+    "osascript, PDF viewer, AWS API, filesystem) and every claude.ai connector.",
+    "Both are registered outside the CLI. See README."
+  ],
+  "servers": {
+    "mempalace": {
+      "type": "stdio",
+      "command": "mempalace-mcp",
+      "args": [],
+      "env": {}
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "X-MCP-Toolsets": "context,repos,pull_requests,issues,actions",
+        "X-MCP-Readonly": "true"
+      },
+      "headersHelper": "${CLAUDE_DIR}/bin/gh-mcp-headers.sh"
+    },
+    "aws-knowledge": {
+      "type": "http",
+      "url": "https://knowledge-mcp.global.api.aws"
+    },
+    "terraform": {
+      "type": "stdio",
+      "command": "${TERRAFORM_MCP_SERVER}",
+      "args": ["stdio", "--toolsets=registry"],
+      "env": {}
+    },
+    "atlassian": {
+      "type": "http",
+      "url": "https://mcp.atlassian.com/v1/mcp"
+    }
+  },
+  "needsInteractiveAuth": ["atlassian"],
+  "requiresBinary": {
+    "mempalace": "mempalace-mcp",
+    "terraform": "terraform-mcp-server"
+  }
+}

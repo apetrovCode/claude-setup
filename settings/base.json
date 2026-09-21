@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "env": {
+    "ENABLE_STOP_REVIEW": "0"
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "outputStyle": "Concise",
+  "theme": "dark-daltonized",
+  "skipWorkflowUsageWarning": true,
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh",
+    "padding": 0
+  },
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Read(~/.claude/jira-defaults.json)",
+      "Bash(git status *)",
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(mempalace search *)",
+      "Bash(mempalace status *)",
+      "Bash(aws sts get-caller-identity *)",
+      "Bash(gh auth status *)",
+      "Bash(gh repo view *)",
+      "Bash(gh search *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "Bash(gh run watch *)",
+      "Bash(gh workflow list *)",
+      "Bash(gh workflow view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr status *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)",
+      "mcp__github__get_*",
+      "mcp__github__list_*",
+      "mcp__github__search_*",
+      "mcp__github__issue_read",
+      "mcp__github__pull_request_read",
+      "Bash(gh api *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(cut *)"
+    ],
+    "deny": [
+      "Read(~/.aws/**)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.npmrc)",
+      "Read(~/.npm/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.git-credentials)",
+      "Read(**/accessKeys*.csv)",
+      "Edit(~/.zshrc)",
+      "Edit(~/.bashrc)"
+    ],
+    "ask": [
+      "Bash(gh run rerun *)",
+      "Bash(gh run cancel *)",
+      "Bash(gh run download *)",
+      "Bash(gh workflow run *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh variable *)",
+      "Bash(gh secret *)",
+      "Bash(gh api * --input *)"
+    ]
+  }
+}

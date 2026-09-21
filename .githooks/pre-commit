@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Refuse to commit machine paths, credentials, or private words.
+#
+# Defence in depth behind the allowlist .gitignore. The allowlist decides which
+# FILES may be tracked; this decides what may be INSIDE them. A public repo
+# built by splitting a private config gets exactly one chance to leak.
+#
+# Enable:  git config core.hooksPath .githooks
+# Bypass:  git commit --no-verify   (think first)
+
+set -uo pipefail
+
+fail=0
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+report() {
+  printf '\n  BLOCKED: %s\n' "$1" >&2
+  shift
+  printf '    %s\n' "$@" >&2
+  fail=1
+}
+
+# --- home directory paths -------------------------------------------------
+# A committed /Users/<name> or /home/<name> path both leaks a username and
+# breaks on every other machine.
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  if hits=$(grep -n -E '/(Users|home)/[a-zA-Z0-9._-]+' "$f" 2>/dev/null); then
+    report "$f contains an absolute home path" "$hits"
+  fi
+done <<< "$staged"
+
+# --- credential shapes ----------------------------------------------------
+for pat in 'ghp_[A-Za-z0-9]\{20,\}' 'gho_[A-Za-z0-9]\{20,\}' 'github_pat_[A-Za-z0-9_]\{20,\}' \
+           '\bAKIA[0-9A-Z]\{16\}\b' '\bASIA[0-9A-Z]\{16\}\b' 'xoxb-[0-9A-Za-z-]\{10,\}' \
+           'sk-ant-[A-Za-z0-9_-]\{20,\}' '-----BEGIN [A-Z ]*PRIVATE KEY-----'; do
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    if hits=$(grep -n -- "$pat" "$f" 2>/dev/null); then
+      report "$f matches a credential pattern" "$hits"
+    fi
+  done <<< "$staged"
+done
+
+# --- private words --------------------------------------------------------
+# .scrub-words is untracked and personal: employer name, GitHub org, account
+# handles, internal service names. One per line, '#' comments allowed.
+root=$(git rev-parse --show-toplevel)
+if [ -f "$root/.scrub-words" ]; then
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    case "$w" in \#*) continue ;; esac
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      if hits=$(grep -n -i -F -- "$w" "$f" 2>/dev/null); then
+        report "$f contains the private word '$w'" "$hits"
+      fi
+    done <<< "$staged"
+  done < "$root/.scrub-words"
+else
+  printf '  note: no .scrub-words — private-word scanning is off\n' >&2
+fi
+
+if [ "$fail" -ne 0 ]; then
+  printf '\n  Nothing was committed. Move the content to ~/.claude/local/, or\n' >&2
+  printf '  add the word to .scrub-words if it is a false positive.\n\n' >&2
+  exit 1
+fi
+
+exit 0

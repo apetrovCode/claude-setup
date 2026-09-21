@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "Copy to ~/.claude/local/settings.work.json. Merged ON TOP of settings/base.json,",
+    "settings/hooks.json, settings/plugins.json and the active profile.",
+    "Objects merge key by key; arrays are unioned, so permission rules and hook",
+    "groups here are ADDED to the public ones rather than replacing them.",
+    "",
+    "Put anything here that names your employer, your accounts, your internal",
+    "services or your sensitive file locations. It never reaches the public repo."
+  ],
+
+  "env": {
+    "AWS_REGION": "<your default region>"
+  },
+
+  "permissions": {
+    "deny": [
+      "Read(~/<path/to/anything/holding/plaintext/secrets>/**)"
+    ],
+    "ask": []
+  },
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $HOME/.claude/local/hooks/<your-guard>.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+
+  "autoMode": {
+    "environment": [
+      "### Org-wide",
+      "**Organization**: <org name and GitHub org>",
+      "**Cloud provider(s)**: <accounts, how they are reached>",
+      "**Primary regions**: <regions per business unit>",
+      "**Secrets management**: <secret store; reference names, never values>",
+      "**CI/CD deploy targets**: <CI system, deploy role chain>",
+      "**Sensitive data locations & audiences**: <paths that must never be read or echoed>",
+      "**Protected deployment namespaces / environments**: <prod-like scopes>",
+      "### User-specific",
+      "**Primary use of Claude Code**: <what you actually do>",
+      "**Trusted repos**: <paths>",
+      "**Org-specific CLIs**: <tools>"
+    ]
+  }
+}

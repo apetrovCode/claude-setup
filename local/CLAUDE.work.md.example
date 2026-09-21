@@ -1,0 +1,35 @@
+<!--
+  Copy to ~/.claude/local/CLAUDE.work.md. The installer appends this to the public
+  claude/CLAUDE.md to produce ~/.claude/CLAUDE.md.
+
+  This is where org-specific rules go: cloud accounts and regions, IaC conventions,
+  ticket prefixes, knowledge-base paths. Also anything personal you would rather not
+  publish — a writing-voice profile, for instance, is not confidential but it is a
+  fingerprint, and the public half of this repo is world-readable.
+-->
+
+## Voice
+
+<!-- How you want drafts to sound, if you want that captured at all. -->
+
+## Cloud access
+
+- Accounts, regions, and which profile reaches which.
+- Where the account map lives.
+- Any rule about how credentials may and may not be handled beyond the generic one
+  already in the public file.
+
+## Infrastructure as code
+
+- Variables with no defaults that must always be passed explicitly.
+- Destroy sequences and the checks that gate them.
+- Which modules are enforce-live against real infrastructure.
+
+## Tickets and docs
+
+- Active ticket prefixes and the tracker.
+- Where durable knowledge is written down.
+
+## Repos and delegation
+
+- Clone layout, roughly how many, and which subagent handles wide sweeps.

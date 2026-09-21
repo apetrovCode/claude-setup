@@ -1,0 +1,2 @@
+[packs]
+enabled = ["cloud.aws", "infrastructure.terraform", "secrets.aws_secrets", "cicd.github_actions", "containers.docker"]

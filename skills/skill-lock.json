@@ -1,0 +1,85 @@
+{
+  "version": 3,
+  "skills": {
+    "github-actions-efficiency": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/github/awesome-copilot.git",
+      "skillPath": "skills/github-actions-efficiency/SKILL.md",
+      "skillFolderHash": "a9041cbe0a768c8c11c26c2524e3a780035988f5",
+      "installedAt": "2026-09-10T06:40:24Z",
+      "updatedAt": "2026-09-10T06:40:24Z",
+      "pinnedRef": "7568a482ce2df38f8965ab5336a3220db796a4ba"
+    },
+    "github-actions-hardening": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/github/awesome-copilot.git",
+      "skillPath": "skills/github-actions-hardening/SKILL.md",
+      "skillFolderHash": "25d75a622f5f8c034be5b25bf6585850d6f7fcd7",
+      "installedAt": "2026-09-10T06:40:17Z",
+      "updatedAt": "2026-09-10T06:40:17Z",
+      "pinnedRef": "7568a482ce2df38f8965ab5336a3220db796a4ba"
+    },
+    "github-actions-runtime-upgrade-conventions": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/github/awesome-copilot.git",
+      "skillPath": "skills/github-actions-runtime-upgrade-conventions/SKILL.md",
+      "skillFolderHash": "f97248e65f3a5e6ee417fb7e885998da6ca35d59",
+      "installedAt": "2026-09-10T06:40:20Z",
+      "updatedAt": "2026-09-10T06:40:20Z",
+      "pinnedRef": "7568a482ce2df38f8965ab5336a3220db796a4ba"
+    },
+    "terraform/refactor-module": {
+      "source": "hashicorp/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/hashicorp/agent-skills.git",
+      "skillPath": "plugins/terraform/skills/refactor-module/SKILL.md",
+      "skillFolderHash": "04bc36190e69c8906eac3d81f2b3e55b398141b0",
+      "installedAt": "2026-09-11T07:40:46Z",
+      "updatedAt": "2026-09-11T07:40:46Z",
+      "pinnedRef": "c2d65dfe492f74d360d35b859b88932222470bd8"
+    },
+    "terraform/terraform-policy": {
+      "source": "hashicorp/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/hashicorp/agent-skills.git",
+      "skillPath": "plugins/terraform/skills/terraform-policy/SKILL.md",
+      "skillFolderHash": "fd0a8dcc963f69d47e111200efe278bc033e71a3",
+      "installedAt": "2026-09-11T07:41:24Z",
+      "updatedAt": "2026-09-11T07:41:24Z",
+      "pinnedRef": "c2d65dfe492f74d360d35b859b88932222470bd8"
+    },
+    "terraform/terraform-search-import": {
+      "source": "hashicorp/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/hashicorp/agent-skills.git",
+      "skillPath": "plugins/terraform/skills/terraform-search-import/SKILL.md",
+      "skillFolderHash": "71bbf754f5dccc0fc805c1b75719e56c1f1edf08",
+      "installedAt": "2026-09-11T07:40:55Z",
+      "updatedAt": "2026-09-11T07:40:55Z",
+      "pinnedRef": "c2d65dfe492f74d360d35b859b88932222470bd8"
+    },
+    "terraform/terraform-style-guide": {
+      "source": "hashicorp/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/hashicorp/agent-skills.git",
+      "skillPath": "plugins/terraform/skills/terraform-style-guide/SKILL.md",
+      "skillFolderHash": "e065e597ff55b717f0d74320448057b0cd6659d4",
+      "installedAt": "2026-09-11T07:40:59Z",
+      "updatedAt": "2026-09-11T07:40:59Z",
+      "pinnedRef": "c2d65dfe492f74d360d35b859b88932222470bd8"
+    },
+    "terraform/terraform-test": {
+      "source": "hashicorp/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/hashicorp/agent-skills.git",
+      "skillPath": "plugins/terraform/skills/terraform-test/SKILL.md",
+      "skillFolderHash": "2549482b2946b6953ccc188820423bdd257314ab",
+      "installedAt": "2026-09-11T07:40:51Z",
+      "updatedAt": "2026-09-11T07:40:51Z",
+      "pinnedRef": "c2d65dfe492f74d360d35b859b88932222470bd8"
+    }
+  }
+}
