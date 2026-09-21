@@ -84,6 +84,24 @@ Two layers of protection:
 - `.githooks/pre-commit` scans staged content for home paths, credential shapes, and any word in
   an untracked personal `.scrub-words` file. Enable it with `git config core.hooksPath .githooks`.
 
+## Pushing from a machine with two GitHub accounts
+
+`gh`'s credential helper serves whichever account is currently active, so on a machine logged
+into both a work and a personal account, pushing here fails with a 403 unless you keep switching.
+A repo-local helper pins it instead. Set once, per clone:
+
+```bash
+git config --add credential.https://github.com.helper ""
+git config --add credential.https://github.com.helper '!f() { test "$1" = get && printf "username=YOURNAME\npassword=%s\n" "$(gh auth token -h github.com -u YOURNAME)"; }; f'
+```
+
+The empty first value discards the helpers inherited from `~/.gitconfig`; without it the global
+one answers first and wins. Pair it with a commit identity that is not your work address:
+
+```bash
+git config user.email "ID+YOURNAME@users.noreply.github.com"
+```
+
 ## Known gaps
 
 Things this repo deliberately cannot reproduce:
