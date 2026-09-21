@@ -63,6 +63,20 @@ build_settings() {
   got="$(printf '%s' "$merged" | jq '.permissions.allow | length')"
   [ "$got" -ge "$want" ] || die "merge lost allow rules: base has $want, result has $got"
 
+  # An unsubstituted token means a value nobody supplied. Left alone it lands in
+  # settings.json as the literal text, which fails at a much less obvious moment.
+  if printf '%s' "$merged" | grep -q '\${'; then
+    warn "unsubstituted token(s) in the built settings — set them in $LOCAL_DIR/local.env:"
+    printf '%s' "$merged" | grep -o '\${[A-Z_]*}' | sort -u | sed 's/^/      /' >&2
+  fi
+
+  # An empty string where a name belongs is the quieter version of the same bug.
+  local empties
+  empties="$(printf '%s' "$merged" | jq -r '.env | to_entries[] | select(.value == "") | .key')"
+  if [ -n "$empties" ]; then
+    warn "empty env value(s) in profile '$profile': $(printf '%s' "$empties" | tr '\n' ' ')"
+  fi
+
   printf '%s\n' "$merged"
 }
 

@@ -12,7 +12,7 @@
 link_one() {
   local src="$REPO/$1" dest="$2"
   [ -e "$src" ] || { warn "missing in repo: $1"; return 1; }
-  mkdir -p "$(dirname "$dest")"
+  mkdir -p "$(dirname "$dest")" || { bad "cannot create $(dirname "$dest")"; return 1; }
 
   if [ -L "$dest" ]; then
     if [ "$(readlink "$dest")" = "$src" ]; then
@@ -30,7 +30,12 @@ link_one() {
     fi
   fi
 
-  ln -s "$src" "$dest"
+  # Report what actually happened. Returning 0 unconditionally here made the
+  # installer claim "4 artifacts linked" on a machine where every ln failed.
+  if ! ln -s "$src" "$dest" 2>/dev/null; then
+    bad "could not link $dest -> $src"
+    return 1
+  fi
   return 0
 }
 
@@ -42,14 +47,19 @@ claude/statusline-command.sh|statusline-command.sh
 "
 
 install_links() {
-  local n=0
+  local n=0 total=0
   local line src dst
   for line in $LINKED_FILES; do
     src="${line%%|*}"; dst="${line##*|}"
+    total=$((total + 1))
     link_one "$src" "$CLAUDE_DIR/$dst" && n=$((n + 1))
   done
   chmod +x "$REPO"/claude/hooks/*.sh "$REPO"/claude/bin/*.sh "$REPO"/claude/statusline-command.sh 2>/dev/null || true
-  ok "$n shell artifacts linked"
+  if [ "$n" -eq "$total" ]; then
+    ok "$n shell artifacts linked"
+  else
+    bad "$n of $total shell artifacts linked"
+  fi
 
   # Org-specific hooks live in the local layer and are used in place.
   if [ -d "$LOCAL_DIR/hooks" ]; then
@@ -59,13 +69,18 @@ install_links() {
 }
 
 install_skills() {
-  local n=0 s
-  mkdir -p "$CLAUDE_DIR/skills"
+  local n=0 total=0 s
+  mkdir -p "$CLAUDE_DIR/skills" || { bad "cannot create $CLAUDE_DIR/skills"; return 1; }
   for s in "$REPO"/skills/*/; do
     [ -d "$s" ] || continue
+    total=$((total + 1))
     link_one "skills/$(basename "$s")" "$CLAUDE_DIR/skills/$(basename "$s")" && n=$((n + 1))
   done
-  ok "$n vendored skills linked"
+  if [ "$n" -eq "$total" ]; then
+    ok "$n vendored skills linked"
+  else
+    bad "$n of $total vendored skills linked"
+  fi
 
   # The other skills are upstream-owned; carry the lockfile so they can be
   # refetched at their pinned refs rather than vendored into this repo.

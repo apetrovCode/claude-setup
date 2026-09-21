@@ -118,33 +118,25 @@ doctor() {
   return 0
 }
 
-# Refuse to let machine-specific or employer-specific strings reach the public
-# tree. Same checks the pre-commit hook runs, so `doctor` catches them earlier.
+# Run the commit scanner over every tracked file, not just staged ones.
+# Deliberately delegates rather than reimplementing: two copies of a secret
+# scanner drift, and the copy that drifts is the one that stops catching things.
 scrub_check() {
-  local hits=0 pat
-  local tracked
-  tracked="$(cd "$REPO" && git ls-files 2>/dev/null)"
-  [ -z "$tracked" ] && { info "nothing tracked yet"; return 0; }
-
-  for pat in "$(printf '/Users/%s' "$(id -un)")" 'ghp_' 'gho_' 'github_pat_' 'AKIA' 'ASIA' 'xoxb-' 'sk-ant-' '-----BEGIN'; do
-    if (cd "$REPO" && printf '%s\n' "$tracked" | xargs grep -l -F -- "$pat" 2>/dev/null | grep -q .); then
-      bad "tracked files contain '$pat':"
-      (cd "$REPO" && printf '%s\n' "$tracked" | xargs grep -l -F -- "$pat" 2>/dev/null | sed 's/^/      /')
-      hits=$((hits + 1))
-    fi
-  done
-
-  if [ -f "$REPO/.scrub-words" ]; then
-    while read -r pat; do
-      [ -n "$pat" ] || continue
-      case "$pat" in \#*) continue ;; esac
-      if (cd "$REPO" && printf '%s\n' "$tracked" | xargs grep -l -i -F -- "$pat" 2>/dev/null | grep -q .); then
-        bad "tracked files contain the private word '$pat':"
-        (cd "$REPO" && printf '%s\n' "$tracked" | xargs grep -l -i -F -- "$pat" 2>/dev/null | sed 's/^/      /')
-        hits=$((hits + 1))
-      fi
-    done < "$REPO/.scrub-words"
+  if ! (cd "$REPO" && git rev-parse --git-dir >/dev/null 2>&1); then
+    info "not a git repo yet — nothing to scan"
+    return 0
   fi
-
-  [ "$hits" -eq 0 ] && ok "no home paths, credentials or private words in tracked files"
+  if [ -z "$(cd "$REPO" && git ls-files 2>/dev/null)" ]; then
+    info "nothing tracked yet"
+    return 0
+  fi
+  local out
+  if out="$(cd "$REPO" && bash .githooks/pre-commit --all 2>&1)"; then
+    ok "no home paths, credentials or private words in tracked files"
+    [ -f "$REPO/.scrub-words" ] \
+      || info "no .scrub-words — private-word scanning is off"
+  else
+    bad "leak scan failed:"
+    printf '%s\n' "$out" | sed 's/^/    /' >&2
+  fi
 }
