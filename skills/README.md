@@ -2,9 +2,14 @@
 
 Two kinds live here, and the installer treats them differently.
 
-**Vendored** — the seven `caveman*` and `cavecrew` directories. No upstream was recorded for
-them, so the real content is committed here and `install.sh` symlinks each one to
+**Vendored** — the seven `caveman*` and `cavecrew` directories. They come from
+[JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman), but were installed without a
+lockfile entry, so this is a snapshot rather than a pin. Upstream has since moved on (Windows
+support, more skills). The snapshot is committed as-is and `install.sh` symlinks each one to
 `~/.claude/skills/<name>`. That exact path matters: skills resolve each other by it.
+
+To track upstream instead, add them to `skill-lock.json` with `skillPath: skills/<name>/SKILL.md`
+and drop the vendored copies.
 
 **Upstream** — eight more, recorded in `skill-lock.json` by pinned git ref rather than forked
 into this repo:
