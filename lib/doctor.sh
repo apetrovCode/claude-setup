@@ -94,7 +94,7 @@ doctor() {
   step "Local layer"
   if [ -d "$LOCAL_DIR" ]; then
     local f
-    for f in local.env settings.work.json CLAUDE.work.md projects-CLAUDE.md; do
+    for f in local.env settings.work.json CLAUDE.work.md projects-CLAUDE.work.md; do
       if [ -e "$LOCAL_DIR/$f" ]; then ok "local/$f"; else info "local/$f absent (optional)"; fi
     done
   else

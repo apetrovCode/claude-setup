@@ -15,7 +15,7 @@ or a mistyped ignore rule publishes it.
 | `local.env.example` | `~/.claude/local/local.env` | Per-machine values: GitHub account, clone dir, Jira key, active profile |
 | `settings.work.json.example` | `~/.claude/local/settings.work.json` | Settings merged on top of the public ones: extra permission rules, extra hooks, the autoMode environment block |
 | `CLAUDE.work.md.example` | `~/.claude/local/CLAUDE.work.md` | Appended to the public `CLAUDE.md` to form `~/.claude/CLAUDE.md` |
-| — | `~/.claude/local/projects-CLAUDE.md` | Copied verbatim to `~/Projects/CLAUDE.md` |
+| `projects-CLAUDE.work.md.example` | `~/.claude/local/projects-CLAUDE.work.md` | Appended to the public `claude/projects-CLAUDE.md` to form `~/Projects/CLAUDE.md` |
 | — | `~/.claude/local/hooks/*.sh` | Hook scripts too org-specific to publish |
 
 `install.sh` works without any of them. It reports which are missing and installs the

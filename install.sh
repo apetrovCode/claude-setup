@@ -88,12 +88,27 @@ generate_claude_md() {
   rm -f "$tmp"
 }
 
+# Same shape as generate_claude_md: public template plus an optional private
+# overlay. ~/Projects is a convention, not a requirement — absent means skip.
 generate_projects_md() {
-  local src="$LOCAL_DIR/projects-CLAUDE.md"
-  [ -f "$src" ] || { info "no local/projects-CLAUDE.md — skipping ~/Projects/CLAUDE.md"; return 0; }
-  local out="$HOME/Projects/CLAUDE.md"
+  local base="$REPO/claude/projects-CLAUDE.md"
+  [ -f "$base" ] || { warn "no claude/projects-CLAUDE.md in repo"; return 0; }
   [ -d "$HOME/Projects" ] || { info "no ~/Projects on this machine — skipping"; return 0; }
-  if write_if_changed "$out" < "$src"; then ok "~/Projects/CLAUDE.md written"; else info "~/Projects/CLAUDE.md already current"; fi
+  local out="$HOME/Projects/CLAUDE.md" tmp
+  tmp="$(mktemp)"
+  cat "$base" > "$tmp"
+  if [ -f "$LOCAL_DIR/projects-CLAUDE.work.md" ]; then
+    printf '\n' >> "$tmp"
+    cat "$LOCAL_DIR/projects-CLAUDE.work.md" >> "$tmp"
+  else
+    info "no local/projects-CLAUDE.work.md — ~/Projects/CLAUDE.md is the public half only"
+  fi
+  if write_if_changed "$out" < "$tmp"; then
+    ok "~/Projects/CLAUDE.md generated ($(wc -l < "$out" | tr -d ' ') lines)"
+  else
+    info "~/Projects/CLAUDE.md already current"
+  fi
+  rm -f "$tmp"
 }
 
 generate_jira_defaults() {

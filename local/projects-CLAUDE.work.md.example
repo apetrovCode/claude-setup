@@ -1,0 +1,13 @@
+<!--
+  Copy to ~/.claude/local/projects-CLAUDE.work.md. The installer appends this to the public
+  claude/projects-CLAUDE.md to produce ~/Projects/CLAUDE.md.
+
+  Only what is specific to your organization belongs here: the GitHub org your clones come
+  from, the MemPalace room names your planning dirs map to, pointers into your knowledge base.
+-->
+
+## Local specifics
+
+- MemPalace wing `wing_projects` rooms: `<room>`, `<room>`.
+- Nearly every repo under `~/gits` is `github.com/<your-org>/<repo-name>`.
+- Org-specific global rules live in `~/.claude/local/CLAUDE.work.md`.

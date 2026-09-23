@@ -26,6 +26,7 @@
 
 !claude/
 !claude/CLAUDE.md
+!claude/projects-CLAUDE.md
 !claude/statusline-command.sh
 !claude/hooks/
 !claude/hooks/*.sh
