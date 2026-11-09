@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Run the harness checks before anything leaves this machine.
+#
+# CI on a public repo only sees a leak after it is published, and it has neither
+# the private layer nor .scrub-words. This hook is the real gate. It runs:
+#   1. the leak scan over every commit the push would publish (added lines, file
+#      names, messages), from the ref lines git passes on stdin;
+#   2. the harness suite (tests/run.sh), against the working tree.
+#
+# Each run is logged, mode 0600, under ~/.claude/local/harness/logs/, or inside
+# this clone's git dir on a machine without the private layer; never in a shared
+# /tmp. The newest 30 are kept. Hits show as file and line, never as the matched
+# text. A commit that fixes a caught problem cites the log's file name and the
+# check id, not the log's contents.
+#
+#   pre-push --log-path   create the log directory, print where this run's log
+#                         goes, and exit (used by the self-tests)
+#
+# Bypass: git push --no-verify   (think first)
+
+set -uo pipefail
+umask 077
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  printf 'pre-push: not inside a git work tree; refusing to push unscanned\n' >&2
+  exit 1
+}
+KEEP=30
+
+log_path() {   # create the log directory, prune old logs, print this run's log path
+  local base dir log
+  base="${CLAUDE_SETUP_HARNESS_DIR:-$HOME/.claude/local/harness}"
+  if [ -d "$(dirname "$base")" ] && mkdir -p "$base/logs" 2>/dev/null; then
+    dir="$base/logs"
+  else
+    dir="$(git rev-parse --absolute-git-dir)/harness-logs" && mkdir -p "$dir" || return 1
+  fi
+  chmod 700 "$dir" || return 1
+  log="$dir/$(date +%Y-%m-%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo nohead).log"
+  : > "$log" || return 1
+  find "$dir" -maxdepth 1 -type f -name '*.log' ! -path "$log" -exec ls -1t {} + 2>/dev/null \
+    | sed -n "$KEEP,\$p" | while IFS= read -r old; do rm -f -- "$old"; done
+  printf '%s\n' "$log"
+}
+
+if [ "${1:-}" = "--log-path" ]; then
+  log_path
+  exit
+fi
+
+log=$(log_path) || log=/dev/null
+
+# One line per ref being pushed: local ref, local sha, remote ref, remote sha.
+refs=$(cat)
+
+printf '%s\n' "$refs" | bash "$root/.githooks/pre-commit" --push "${1:-}" 2>&1 | tee "$log"
+scan_rc=${PIPESTATUS[1]}
+
+bash "$root/tests/run.sh" 2>&1 | tee -a "$log"
+rc=${PIPESTATUS[0]}
+[ "$scan_rc" -eq 0 ] || rc=1
+
+printf '  pre-push log: %s\n' "$log" >&2
+if [ "$rc" -ne 0 ]; then
+  printf '  Nothing was pushed: fix the BLOCKED, FAIL or XPASS lines above, or list a\n' >&2
+  printf '  known gap in tests/expected-fail.txt with the date and the step that fixes it.\n' >&2
+fi
+exit "$rc"

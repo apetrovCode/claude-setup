@@ -1,0 +1,5 @@
+# Read-only gh api forms that must stay allowed without a prompt.
+gh api repos/OWNER/REPO
+gh api repos/OWNER/REPO/pulls --paginate
+gh api user --jq .login
+gh api repos/OWNER/REPO/actions/runs?per_page=5

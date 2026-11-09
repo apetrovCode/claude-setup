@@ -1,0 +1,57 @@
+# Public harness checks. CI sees neither the private layer nor .scrub-words, so
+# .githooks/pre-push stays the real leak gate. This job runs on pushes to main
+# and on pull requests; a branch pushed without a PR is checked by the hook only.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+jobs:
+  checks:
+    name: harness checks (public)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Public checks
+        run: |
+          export CLAUDE_CONFIG_DIR="$RUNNER_TEMP/cfg"
+          ./tests/run.sh --public-only
+
+      - name: Install pinned workflow linters
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+          ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+          ZIZMOR_VERSION: "1.30.1"
+          ZIZMOR_SHA256: "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a"
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          cd "$RUNNER_TEMP"
+          curl -fsSLo actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tgz" | sha256sum -c -
+          tar -xzf actionlint.tgz -C "$bin" actionlint
+          curl -fsSLo zizmor.tgz "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZIZMOR_SHA256}  zizmor.tgz" | sha256sum -c -
+          tar -xzf zizmor.tgz -C "$bin" zizmor
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Lint workflows
+        env:
+          # zizmor's online audits (impostor commits, pins that don't match their
+          # version comment, known-vulnerable actions) read the GitHub API. The
+          # job token is read-only.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          actionlint -no-color
+          zizmor --min-severity medium --min-confidence medium .github/workflows

@@ -18,6 +18,16 @@
 !.githooks/
 !.githooks/**
 
+# Harness checks and their CI. tests/static.sh fails if any of these paths is
+# ignored, because an allowlist drops a new file without a word.
+!tests/
+!tests/**
+!tools/
+!tools/*
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+
 !lib/
 !lib/**
 
@@ -35,6 +45,9 @@
 
 !skills/
 !skills/**
+# ...except Python byte-code: binary, and it embeds absolute source paths.
+skills/**/__pycache__/
+skills/**/*.pyc
 
 !mcp/
 !mcp/*.json

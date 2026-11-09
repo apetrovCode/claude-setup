@@ -1,0 +1,7 @@
+# id<TAB>jq filter, true when the key is present<TAB>minimum Claude Code version<TAB>source
+# A settings file that fails validation is silently ignored in -p mode, so a key
+# that an older CLI rejects can switch off every setting for scripted runs.
+onFailure	[.hooks[]?[]?.hooks[]? | has("onFailure")] | any	2.1.295	https://code.claude.com/docs/en/hooks
+desktopSessionCleanupPeriodDays	has("desktopSessionCleanupPeriodDays")	2.1.248	https://code.claude.com/docs/en/claude-directory
+sandbox	has("sandbox")	2.0.24	https://code.claude.com/docs/en/sandboxing
+blockReadsOutsideWorkingDirectories	.permissions | has("blockReadsOutsideWorkingDirectories")	2.1.257	https://code.claude.com/docs/en/sandboxing

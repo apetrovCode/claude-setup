@@ -1,0 +1,13 @@
+# Mutating gh api forms that must need approval. OWNER/REPO are placeholders.
+# Data only: tests/static.sh matches these against the ask rules; nothing runs them.
+gh api -X DELETE repos/OWNER/REPO/hooks/1
+gh api repos/OWNER/REPO/hooks/1 -X DELETE
+gh api -XDELETE repos/OWNER/REPO/hooks/1
+gh api --method PATCH repos/OWNER/REPO -f name=x
+gh api repos/OWNER/REPO --method=PUT
+gh api repos/OWNER/REPO/issues -f title=x
+gh api repos/OWNER/REPO/issues -F title=@body.txt
+gh api repos/OWNER/REPO/issues --field title=x
+gh api repos/OWNER/REPO/issues --raw-field body=x
+gh api graphql -f query=QUERY
+gh api repos/OWNER/REPO/contents/f --input body.json

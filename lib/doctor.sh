@@ -104,6 +104,9 @@ doctor() {
   step "Leak scan"
   scrub_check
 
+  step "Checks"
+  harness_check
+
   step "Known gaps"
   [ -z "$DCG" ] && info "no destructive-command guard (dcg is a standalone binary, not in this repo)"
   [ "$PLATFORM" != macos ] && info "macOS desktop-app MCP extensions are not reproducible here"
@@ -118,6 +121,22 @@ doctor() {
   return 0
 }
 
+# Run the harness checks (tests/run.sh) without the slow ones. Known gaps listed
+# in the expected-fail files report as xfail and do not fail doctor.
+harness_check() {
+  if [ ! -f "$REPO/tests/run.sh" ]; then
+    info "no tests/run.sh"
+    return 0
+  fi
+  local out
+  if out="$(bash "$REPO/tests/run.sh" --quick 2>&1)"; then
+    ok "$(printf '%s\n' "$out" | tail -n 1)"
+  else
+    bad "harness checks failed ($(printf '%s\n' "$out" | tail -n 1)):"
+    printf '%s\n' "$out" | grep -E '^  (FAIL|XPASS) ' | sed 's/^/  /' >&2
+  fi
+}
+
 # Run the commit scanner over every tracked file, not just staged ones.
 # Deliberately delegates rather than reimplementing: two copies of a secret
 # scanner drift, and the copy that drifts is the one that stops catching things.
@@ -130,11 +149,19 @@ scrub_check() {
     info "nothing tracked yet"
     return 0
   fi
-  local out
+  local out list tab
   if out="$(cd "$REPO" && bash .githooks/pre-commit --all 2>&1)"; then
-    ok "no home paths, credentials or private words in tracked files"
-    [ -f "$REPO/.scrub-words" ] \
-      || info "no .scrub-words — private-word scanning is off"
+    # Same verdict as tests/run.sh: private words are named only when the
+    # scanner found a list (here or in the main worktree) holding a word.
+    tab="$(printf '\t')"
+    list="$(cd "$REPO" && bash .githooks/pre-commit --scrub-list 2>/dev/null)" || list=""
+    case "${list##*"$tab"}" in
+      ''|0|*[!0-9]*)
+        ok "no home paths or credential shapes in tracked files"
+        info "no .scrub-words with a word in it — private-word scanning is off" ;;
+      *)
+        ok "no home paths, credential shapes or private words in tracked files" ;;
+    esac
   else
     bad "leak scan failed:"
     printf '%s\n' "$out" | sed 's/^/    /' >&2

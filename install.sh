@@ -5,6 +5,7 @@
 #   ./install.sh use <profile>  rebuild settings.json against another profile
 #   ./install.sh sync           report drift between the live files and the repo
 #   ./install.sh doctor         verify the installed state, change nothing
+#   ./install.sh test [args]    run the harness checks (tests/run.sh --help)
 #
 # Design: artifacts with one writer are symlinked, so editing the live file
 # edits the repo. Artifacts several processes write — settings.json above all,
@@ -103,9 +104,12 @@ generate_projects_md() {
   else
     info "no local/projects-CLAUDE.work.md — ~/Projects/CLAUDE.md is the public half only"
   fi
+  # The tildes below are display text, not paths.
   if write_if_changed "$out" < "$tmp"; then
+    # shellcheck disable=SC2088
     ok "~/Projects/CLAUDE.md generated ($(wc -l < "$out" | tr -d ' ') lines)"
   else
+    # shellcheck disable=SC2088
     info "~/Projects/CLAUDE.md already current"
   fi
   rm -f "$tmp"
@@ -237,7 +241,7 @@ cmd_sync() {
 }
 
 usage() {
-  sed -n '2,13p' "$REPO/install.sh" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$REPO/install.sh" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -245,6 +249,7 @@ case "${1:-}" in
   use)        shift; cmd_use "$@" ;;
   sync)       cmd_sync ;;
   doctor)     doctor ;;
+  test)       shift; exec bash "$REPO/tests/run.sh" "$@" ;;
   -h|--help|help) usage ;;
   *)          usage; exit 1 ;;
 esac
