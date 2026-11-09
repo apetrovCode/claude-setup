@@ -13,6 +13,10 @@
 #
 # Known gaps live in expected-fail files: one "id<TAB>since<TAB>reason" per line.
 
+# Loaded once: a suite that sources this file again must not reset the counts.
+[ -n "${H_LIB_LOADED:-}" ] && return 0
+H_LIB_LOADED=1
+
 H_PASS=0
 H_FAIL=0
 H_XFAIL=0
@@ -24,8 +28,17 @@ H_TMP=""
 
 h_tmp_init() {
   H_TMP="$(mktemp -d "${TMPDIR:-/tmp}/claude-setup-tests.XXXXXX")"
-  # shellcheck disable=SC2064
-  trap "rm -rf '$H_TMP'" EXIT
+  trap h_exit EXIT
+}
+
+h_exit() {   # EXIT trap: drop the temp dir; a run that exits 0 before h_summary fails
+  local rc=$?
+  rm -rf "$H_TMP"
+  if [ "${H_DONE:-0}" != 1 ] && [ "$rc" -eq 0 ]; then
+    printf '  FAIL  runner - the run ended before its summary (did a suite call exit?)\n'
+    exit 1
+  fi
+  exit "$rc"
 }
 
 h_suite() { printf '\n== %s\n' "$*"; }
@@ -113,12 +126,14 @@ h_run_suite() {   # h_run_suite <id> <file> <entry function>: load a suite file,
   # A suite that fails to load, or loads without its entry function, reports
   # nothing at all, and an empty report would otherwise read as a pass.
   local _rs_id="$1" _rs_file="$2" _rs_fn="$3" _rs_before
-  # shellcheck disable=SC1090
-  if ! . "$_rs_file"; then
+  if ! bash -n "$_rs_file" 2>/dev/null; then
     H_FAIL=$((H_FAIL + 1))
-    printf '  FAIL  %s - %s did not load\n' "$_rs_id" "${_rs_file##*/}"
+    printf '  FAIL  %s - %s does not parse\n' "$_rs_id" "${_rs_file##*/}"
     return 1
   fi
+  # The status of `.` is that of the file's last command, not a load result.
+  # shellcheck disable=SC1090
+  . "$_rs_file"
   if ! declare -F "$_rs_fn" >/dev/null; then
     H_FAIL=$((H_FAIL + 1))
     printf '  FAIL  %s - %s defines no %s\n' "$_rs_id" "${_rs_file##*/}" "$_rs_fn"
@@ -135,7 +150,12 @@ h_run_suite() {   # h_run_suite <id> <file> <entry function>: load a suite file,
 
 h_summary() {
   local total=$((H_PASS + H_FAIL + H_XFAIL + H_XPASS))
+  H_DONE=1
   printf '\nchecks %d: ok %d, xfail %d, FAIL %d, XPASS %d, skipped %d, warnings %d\n' \
     "$total" "$H_PASS" "$H_XFAIL" "$H_FAIL" "$H_XPASS" "$H_SKIP" "$H_WARN"
+  if [ "$(h_results)" -eq 0 ]; then
+    printf '  FAIL  runner - no suite reported anything\n'
+    return 1
+  fi
   [ $((H_FAIL + H_XPASS)) -eq 0 ]
 }

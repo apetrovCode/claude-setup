@@ -21,27 +21,46 @@ sf_check_git_env_cleared() {
   [ -z "$out" ] || { printf 'git -C read the outer GIT_DIR instead (remote: %s)\n' "$out"; return 1; }
 }
 
-# A suite that fails to load, lacks its entry function or reports nothing must
-# fail the run. Silence must never read as a pass.
+# A suite that fails to load, lacks its entry function, reports nothing, exits
+# the runner or reloads the helpers must fail the run; a valid suite whose last
+# line happens to be false must not. Silence must never read as a pass.
 sf_check_suite_load_guard() {
   local d c rc bad=""
   d="$(mktemp -d "$H_TMP/loadguard.XXXXXX")" || return 1
-  for c in broken renamed silent good; do
+  for c in broken renamed silent exits topexit relib good lastfalse; do
     mkdir -p "$d/$c"
     case "$c" in
-      broken)  printf 'private_suite() {\n  h_check x x true\n' ;;
-      renamed) printf 'private_checks() { h_check x x true; }\n' ;;
-      silent)  printf 'private_suite() { :; }\n' ;;
-      good)    printf 'private_suite() { h_check x x true; }\n' ;;
+      broken)    printf 'private_suite() {\n  h_check x x true\n' ;;
+      renamed)   printf 'private_checks() { h_check x x true; }\n' ;;
+      silent)    printf 'private_suite() { :; }\n' ;;
+      exits)     printf 'private_suite() { h_check x x true; exit 0; }\n' ;;
+      topexit)   printf 'exit 0\nprivate_suite() { h_check x x true; }\n' ;;
+      relib)     printf 'private_suite() { h_check x x false; . "$REPO/tests/lib.sh"; h_check y y true; }\n' ;;
+      good)      printf 'private_suite() { h_check x x true; }\n' ;;
+      lastfalse) printf 'private_suite() { h_check x x true; }\n[ -f /nonexistent/extra.sh ] && . /nonexistent/extra.sh\n' ;;
     esac > "$d/$c/checks.sh"
     CLAUDE_SETUP_HARNESS_DIR="$d/$c" bash "$REPO/tests/run.sh" private >/dev/null 2>&1
     rc=$?
     case "$c" in
-      good) [ "$rc" -eq 0 ] || bad="$bad $c(exit $rc)" ;;
-      *)    [ "$rc" -ne 0 ] || bad="$bad $c(exit 0)" ;;
+      good|lastfalse) [ "$rc" -eq 0 ] || bad="$bad $c(exit $rc)" ;;
+      *)              [ "$rc" -ne 0 ] || bad="$bad $c(exit 0)" ;;
     esac
   done
+  bash "$REPO/tests/run.sh" "" >/dev/null 2>&1 && bad="$bad empty-suite-name(exit 0)"
   [ -z "$bad" ] || { printf 'wrong exit status for:%s\n' "$bad"; return 1; }
+}
+
+# The static suite keeps going when the settings do not build: the scans that
+# do not need them (shellcheck, ignore rules, the leak scan) still run.
+sf_check_static_keeps_going() {
+  local out
+  out="$(
+    # shellcheck source=tests/static.sh
+    . "$REPO/tests/static.sh"
+    static_build() { return 1; }   # no profile builds
+    QUICK=1 static_suite 2>&1
+  )"
+  sf_has "$out" "leak-scan" || { printf 'with no settings built, the static suite skipped the leak scan\n'; return 1; }
 }
 
 sf_fake_token() {   # a token-shaped string that matches the scanner, built at run time
@@ -300,7 +319,8 @@ sf_check_push_refs() {
 
 self_suite() {
   h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" sf_check_git_env_cleared
-  h_check suite-load-guard "a suite that fails to load or reports nothing fails the run" sf_check_suite_load_guard
+  h_check suite-load-guard "a suite that fails to load, exits or reports nothing fails the run" sf_check_suite_load_guard
+  h_check static-keeps-going "the static suite still scans when the settings do not build" sf_check_static_keeps_going
   h_check scanner-hides-hits "the leak scanner reports where a hit is, never the matched text" sf_check_scanner_hides_hits
   h_check scanner-content "the file scan handles binary, non-UTF-8, odd word lists and embedded keys" sf_check_scanner_content
   h_check push-scan "pre-push scans every commit a push publishes, messages included" sf_check_push_scan

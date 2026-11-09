@@ -191,15 +191,34 @@ st_leak_checks() {   # the leak scan over tracked files, and whether it covered 
 
 static_suite() {
   local p
+  # install.sh defaults to the default profile, so its build is checked even
+  # when the file is missing. Other profiles are checked as found.
+  h_check settings-build-default "settings for profile 'default' build into valid JSON" static_build default
   for p in "$REPO"/settings/profile.*.json; do
     p="${p##*/profile.}"
     p="${p%.json}"
+    case "$p" in default|'*') continue ;; esac
     h_check "settings-build-$p" "settings for profile '$p' build into valid JSON" static_build "$p"
   done
-  if [ ! -s "$H_TMP/settings-default.json" ]; then
+  if [ -s "$H_TMP/settings-default.json" ]; then
+    st_rule_checks
+  else
     h_skip rules "rule checks" "the default profile did not build"
-    return 0
   fi
+  # These need no built settings, so they run either way.
+  h_skip hook-matcher-coverage "hook matchers cover their case tables" "hook case tables not built yet"
+  h_check gitignore-readmits "test, tool and CI files are not ignored" st_check_gitignore
+  if [ "${QUICK:-0}" -eq 1 ]; then
+    h_skip shellcheck "shellcheck" "--quick"
+  elif command -v shellcheck >/dev/null 2>&1; then
+    h_check shellcheck "shellcheck finds no warnings" st_check_shellcheck
+  else
+    h_skip shellcheck "shellcheck" "shellcheck not installed"
+  fi
+  st_leak_checks
+}
+
+st_rule_checks() {   # checks on the built default settings
   h_check deny-baseline "credential stores stay Read-denied" st_check_deny_baseline
   h_check no-home-wide-read-allow "no allow rule reads the whole home directory" st_check_no_home_wide_read
   h_check gh-api-mutations-ask "mutating gh api forms need approval" st_check_gh_api_mutations_ask
@@ -211,14 +230,4 @@ static_suite() {
   else
     h_skip settings-min-versions "settings keys vs CLI version" "no claude CLI here"
   fi
-  h_skip hook-matcher-coverage "hook matchers cover their case tables" "hook case tables not built yet"
-  h_check gitignore-readmits "test, tool and CI files are not ignored" st_check_gitignore
-  if [ "${QUICK:-0}" -eq 1 ]; then
-    h_skip shellcheck "shellcheck" "--quick"
-  elif command -v shellcheck >/dev/null 2>&1; then
-    h_check shellcheck "shellcheck finds no warnings" st_check_shellcheck
-  else
-    h_skip shellcheck "shellcheck" "shellcheck not installed"
-  fi
-  st_leak_checks
 }

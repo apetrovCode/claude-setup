@@ -30,7 +30,8 @@ for a in "$@"; do
     --live)        LIVE=1 ;;
     -h|--help)     sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)            printf 'unknown flag: %s\n' "$a" >&2; exit 2 ;;
-    *)             SUITES="$SUITES $a" ;;
+    *)             case "$a" in *[![:space:]]*) ;; *) printf 'empty suite name\n' >&2; exit 2 ;; esac
+                   SUITES="$SUITES $a" ;;
   esac
 done
 [ -n "$SUITES" ] || SUITES="static self private hooks dcg scanner"
