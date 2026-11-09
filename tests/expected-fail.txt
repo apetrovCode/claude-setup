@@ -1,0 +1,3 @@
+# Known gaps: id<TAB>since<TAB>reason. A listed check that starts passing is
+# reported as XPASS and fails the run until its line is removed here.
+gh-api-mutations-ask	2026-11-08	gh api is allowed wholesale; ask rules for the mutating forms are the next config change

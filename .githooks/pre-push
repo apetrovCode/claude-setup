@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Run the harness checks before anything leaves this machine.
+#
+# CI on a public repo only sees a leak after it is published, and it has neither
+# the private layer nor .scrub-words. This hook is the real gate.
+#
+# The output is kept under ~/.claude/local/harness/logs/ (or $TMPDIR on a machine
+# without a local layer), so a commit that fixes a caught problem can cite it.
+#
+# Bypass: git push --no-verify   (think first)
+
+set -uo pipefail
+
+root=$(git rev-parse --show-toplevel) || exit 0
+base="${CLAUDE_SETUP_HARNESS_DIR:-$HOME/.claude/local/harness}"
+if [ -d "$(dirname "$base")" ] && mkdir -p "$base/logs" 2>/dev/null; then
+  logdir="$base/logs"
+else
+  logdir="${TMPDIR:-/tmp}"
+fi
+log="$logdir/$(date +%Y-%m-%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo nohead).log"
+
+bash "$root/tests/run.sh" 2>&1 | tee "$log"
+rc=${PIPESTATUS[0]}
+printf '  pre-push log: %s\n' "$log" >&2
+if [ "$rc" -ne 0 ]; then
+  printf '  Nothing was pushed: fix the FAIL/XPASS lines above, or list a known\n' >&2
+  printf '  gap in tests/expected-fail.txt with the date and the step that fixes it.\n' >&2
+fi
+exit "$rc"

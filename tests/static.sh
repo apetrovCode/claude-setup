@@ -1,0 +1,200 @@
+# shellcheck shell=bash
+# Public static checks. They run against settings built from the repo's own
+# fragments with no private layer, so CI and every machine see the same input.
+# Employer-specific rules never go here; they belong in the private layer.
+#
+# Sourced by tests/run.sh, which provides REPO, QUICK, H_TMP and the h_* helpers.
+
+static_build() {   # static_build <profile>: build into $H_TMP/settings-<profile>.json
+  local profile="$1"
+  if (
+    CLAUDE_CONFIG_DIR="$H_TMP/cfg-$profile"   # empty config dir: no local layer
+    export CLAUDE_CONFIG_DIR
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    # shellcheck source=lib/common.sh
+    . "$REPO/lib/common.sh"
+    # shellcheck source=lib/merge.sh
+    . "$REPO/lib/merge.sh"
+    build_settings "$profile"
+  ) > "$H_TMP/settings-$profile.json" 2> "$H_TMP/settings-$profile.err" \
+    && jq empty "$H_TMP/settings-$profile.json" 2>/dev/null; then
+    return 0
+  fi
+  cat "$H_TMP/settings-$profile.err"
+  return 1
+}
+
+st_rules() {   # st_rules <allow|ask|deny>: rules of the default build, one per line
+  jq -r --arg k "$1" '.permissions[$k] // [] | .[]' "$H_TMP/settings-default.json"
+}
+
+st_bash_globs() {   # st_bash_globs <allow|ask|deny>: the patterns inside Bash(...)
+  st_rules "$1" | sed -n 's/^Bash(\(.*\))$/\1/p'
+}
+
+# Approximates Claude Code's Bash rule matching with shell globs: '*' matches
+# any run of characters, spaces included. Plan step 3's smoke run checks the
+# approximation against the real permission engine.
+st_match_any() {   # st_match_any <command> <file of globs>
+  local cmd="$1" g
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    # shellcheck disable=SC2053   # unquoted on purpose: glob match
+    [[ $cmd == $g ]] && return 0
+  done < "$2"
+  return 1
+}
+
+st_check_deny_baseline() {
+  local want missing=""
+  for want in 'Read(~/.aws/**)' 'Read(~/.ssh/**)' 'Read(~/.gnupg/**)' \
+              'Read(~/.config/gh/**)' 'Read(~/.git-credentials)' \
+              'Read(~/.docker/config.json)' 'Read(~/.npmrc)' 'Read(~/.kube/**)' \
+              'Read(**/accessKeys*.csv)'; do
+    st_rules deny | grep -qxF "$want" || missing="$missing $want"
+  done
+  [ -z "$missing" ] || { printf 'missing deny rules:%s\n' "$missing"; return 1; }
+}
+
+st_check_no_home_wide_read() {
+  local hits
+  hits="$(st_rules allow | grep -E '^Read$|^Read\((\*\*|//\*\*|~/\*\*|//(Users|home)/[^/]+/\*\*)\)$' || true)"
+  [ -z "$hits" ] || { printf 'home-wide Read allow:\n%s\n' "$hits"; return 1; }
+}
+
+st_check_gh_api_mutations_ask() {
+  local cmd missing=""
+  st_bash_globs ask > "$H_TMP/ask.globs"
+  while IFS= read -r cmd; do
+    case "$cmd" in ''|\#*) continue ;; esac
+    st_match_any "$cmd" "$H_TMP/ask.globs" || missing="$missing
+  $cmd"
+  done < "$REPO/tests/fixtures/gh-api-mutations.txt"
+  [ -z "$missing" ] || { printf 'not matched by any ask rule:%s\n' "$missing"; return 1; }
+}
+
+st_check_gh_api_reads_allowed() {
+  local cmd bad=""
+  st_bash_globs allow > "$H_TMP/allow.globs"
+  { st_bash_globs ask; st_bash_globs deny; } > "$H_TMP/askdeny.globs"
+  while IFS= read -r cmd; do
+    case "$cmd" in ''|\#*) continue ;; esac
+    if ! st_match_any "$cmd" "$H_TMP/allow.globs"; then
+      bad="$bad
+  not allowed: $cmd"
+    elif st_match_any "$cmd" "$H_TMP/askdeny.globs"; then
+      bad="$bad
+  asks or denies: $cmd"
+    fi
+  done < "$REPO/tests/fixtures/gh-api-reads.txt"
+  [ -z "$bad" ] || { printf 'read-only gh api forms affected:%s\n' "$bad"; return 1; }
+}
+
+st_hook_commands() {
+  jq -r '[.hooks[]?[]?.hooks[]?.command // empty] | .[]' "$H_TMP/settings-default.json"
+}
+
+st_check_hook_scripts_parse() {
+  local cmd f out bad="" n=0
+  while IFS= read -r cmd; do
+    case "$cmd" in */.claude/hooks/*.sh*) ;; *) continue ;; esac
+    f="${cmd##*/.claude/hooks/}"
+    f="${f%% *}"
+    n=$((n + 1))
+    if [ ! -f "$REPO/claude/hooks/$f" ]; then
+      bad="$bad
+  registered but missing: claude/hooks/$f"
+    elif ! out="$(bash -n "$REPO/claude/hooks/$f" 2>&1)"; then
+      bad="$bad
+  syntax error in claude/hooks/$f: $out"
+    fi
+  done <<EOF
+$(st_hook_commands)
+EOF
+  [ "$n" -gt 0 ] || { printf 'no hook scripts registered\n'; return 1; }
+  [ -z "$bad" ] || { printf '%s\n' "$bad"; return 1; }
+}
+
+st_check_hook_scripts_registered() {
+  local f bad=""
+  for f in "$REPO"/claude/hooks/*.sh; do
+    [ -f "$f" ] || continue
+    st_hook_commands | grep -qF "/.claude/hooks/$(basename "$f")" || bad="$bad $(basename "$f")"
+  done
+  [ -z "$bad" ] || { printf 'hook scripts with no registration:%s\n' "$bad"; return 1; }
+}
+
+st_check_min_versions() {
+  local cli id filter min src bad=""
+  cli="$(claude --version 2>/dev/null | awk '{print $1}')"
+  while IFS=$'\t' read -r id filter min src; do
+    case "$id" in ''|\#*) continue ;; esac
+    if jq -e "$filter" "$H_TMP/settings-default.json" >/dev/null 2>&1; then
+      h_version_ge "$cli" "$min" || bad="$bad
+  $id needs Claude Code >= $min ($src); the CLI on PATH is $cli"
+    fi
+  done < "$REPO/tests/settings-min-versions.tsv"
+  [ -z "$bad" ] || { printf '%s\n' "$bad"; return 1; }
+}
+
+st_check_gitignore() {
+  local p bad="" ignored
+  for p in tests/run.sh tests/lib.sh tests/static.sh tests/expected-fail.txt \
+           tests/settings-min-versions.tsv tests/fixtures/gh-api-mutations.txt \
+           tests/fixtures/gh-api-reads.txt .githooks/pre-push \
+           .github/workflows/ci.yml tools/harness-scan tools/harness-replay; do
+    (cd "$REPO" && git check-ignore -q --no-index "$p") && bad="$bad $p"
+  done
+  ignored="$(cd "$REPO" && git ls-files -oi --exclude-standard -- tests tools .github)"
+  [ -z "$bad" ] && [ -z "$ignored" ] && return 0
+  printf 'ignored by .gitignore:%s\n%s\n' "$bad" "$ignored"
+  return 1
+}
+
+st_check_shellcheck() {
+  local files
+  files="$(cd "$REPO" && git ls-files -co --exclude-standard -- \
+    install.sh bootstrap-linux.sh 'lib/*.sh' 'claude/*.sh' 'claude/hooks/*.sh' \
+    'claude/bin/*.sh' '.githooks/*' 'tests/*.sh' 'tests/**/*.sh' | sort -u)"
+  [ -n "$files" ] || { printf 'no shell files found\n'; return 1; }
+  # shellcheck disable=SC2086   # one file name per word
+  (cd "$REPO" && shellcheck -x -S warning $files)
+}
+
+st_check_leak_scan() {
+  (cd "$REPO" && bash .githooks/pre-commit --all)
+}
+
+static_suite() {
+  local p
+  for p in "$REPO"/settings/profile.*.json; do
+    p="${p##*/profile.}"
+    p="${p%.json}"
+    h_check "settings-build-$p" "settings for profile '$p' build into valid JSON" static_build "$p"
+  done
+  if [ ! -s "$H_TMP/settings-default.json" ]; then
+    h_skip rules "rule checks" "the default profile did not build"
+    return 0
+  fi
+  h_check deny-baseline "credential stores stay Read-denied" st_check_deny_baseline
+  h_check no-home-wide-read-allow "no allow rule reads the whole home directory" st_check_no_home_wide_read
+  h_check gh-api-mutations-ask "mutating gh api forms need approval" st_check_gh_api_mutations_ask
+  h_check gh-api-reads-allowed "read-only gh api forms stay allowed" st_check_gh_api_reads_allowed
+  h_check hook-scripts-parse "every registered hook script exists and parses" st_check_hook_scripts_parse
+  h_check hook-scripts-registered "every hook script is registered" st_check_hook_scripts_registered
+  if command -v claude >/dev/null 2>&1; then
+    h_check settings-min-versions "no settings key needs a newer CLI than the one on PATH" st_check_min_versions
+  else
+    h_skip settings-min-versions "settings keys vs CLI version" "no claude CLI here"
+  fi
+  h_skip hook-matcher-coverage "hook matchers cover their case tables" "hook case tables not built yet"
+  h_check gitignore-readmits "test, tool and CI files are not ignored" st_check_gitignore
+  if [ "${QUICK:-0}" -eq 1 ]; then
+    h_skip shellcheck "shellcheck" "--quick"
+  elif command -v shellcheck >/dev/null 2>&1; then
+    h_check shellcheck "shellcheck finds no warnings" st_check_shellcheck
+  else
+    h_skip shellcheck "shellcheck" "shellcheck not installed"
+  fi
+  h_check leak-scan "no home paths, credentials or private words in tracked files" st_check_leak_scan
+}

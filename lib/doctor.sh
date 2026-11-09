@@ -104,6 +104,9 @@ doctor() {
   step "Leak scan"
   scrub_check
 
+  step "Checks"
+  harness_check
+
   step "Known gaps"
   [ -z "$DCG" ] && info "no destructive-command guard (dcg is a standalone binary, not in this repo)"
   [ "$PLATFORM" != macos ] && info "macOS desktop-app MCP extensions are not reproducible here"
@@ -116,6 +119,22 @@ doctor() {
   fi
   printf '%sdoctor: OK%s (%d warning(s))\n' "$C_OK" "$C_OFF" "$WARNINGS"
   return 0
+}
+
+# Run the harness checks (tests/run.sh) without the slow ones. Known gaps listed
+# in the expected-fail files report as xfail and do not fail doctor.
+harness_check() {
+  if [ ! -f "$REPO/tests/run.sh" ]; then
+    info "no tests/run.sh"
+    return 0
+  fi
+  local out
+  if out="$(bash "$REPO/tests/run.sh" --quick 2>&1)"; then
+    ok "$(printf '%s\n' "$out" | tail -n 1)"
+  else
+    bad "harness checks failed ($(printf '%s\n' "$out" | tail -n 1)):"
+    printf '%s\n' "$out" | grep -E '^  (FAIL|XPASS) ' | sed 's/^/  /' >&2
+  fi
 }
 
 # Run the commit scanner over every tracked file, not just staged ones.

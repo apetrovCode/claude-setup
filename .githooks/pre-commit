@@ -31,6 +31,15 @@ SELF_EXCLUDE='^(\.githooks/pre-commit|lib/doctor\.sh)$'
 files=$(printf '%s\n' "$files" | grep -Ev "$SELF_EXCLUDE" || true)
 [ -z "$files" ] && exit 0
 
+# .scrub-words is untracked, so a linked worktree has no copy of its own. Fall
+# back to the main working tree's list rather than silently scanning without it.
+scrub="$root/.scrub-words"
+if [ ! -f "$scrub" ]; then
+  common=$(git rev-parse --git-common-dir 2>/dev/null) \
+    && main_root=$(cd "$common/.." 2>/dev/null && pwd) \
+    && [ -f "$main_root/.scrub-words" ] && scrub="$main_root/.scrub-words"
+fi
+
 fail=0
 report() {
   printf '\n  BLOCKED: %s\n' "$1" >&2
@@ -70,15 +79,26 @@ done
 # --- private words --------------------------------------------------------
 # .scrub-words is untracked and personal: employer name, GitHub org, account
 # handles, internal service names. One per line, '#' comments allowed.
-if [ -f "$root/.scrub-words" ]; then
+if [ -f "$scrub" ]; then
   while IFS= read -r w; do
     [ -n "$w" ] || continue
     case "$w" in \#*) continue ;; esac
     scan "-iF" "$w" "contains the private word '$w'"
-  done < "$root/.scrub-words"
+  done < "$scrub"
 elif [ "$MODE" != "--all" ]; then
   printf '  note: no .scrub-words — private-word scanning is off\n' >&2
 fi
+
+# --- shell syntax ---------------------------------------------------------
+# Hooks deploy from this tree. A syntax error makes bash exit 2, and a
+# PreToolUse hook that exits 2 blocks every Bash call in every open session.
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  case "$f" in *.sh|.githooks/*) ;; *) continue ;; esac
+  if ! out=$(bash -n "$f" 2>&1); then
+    report "$f has a shell syntax error" "$out"
+  fi
+done <<< "$files"
 
 if [ "$fail" -ne 0 ]; then
   if [ "$MODE" != "--all" ]; then
