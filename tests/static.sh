@@ -165,6 +165,15 @@ st_check_leak_scan() {
   (cd "$REPO" && bash .githooks/pre-commit --all)
 }
 
+st_check_git_env_cleared() {   # a hook's GIT_DIR must not redirect `git -C`
+  local d out
+  d="$(mktemp -d "$H_TMP/gitenv.XXXXXX")" || return 1
+  git -c init.defaultBranch=main init -q "$d/a" && git -c init.defaultBranch=main init -q "$d/b" \
+    && git -C "$d/a" remote add origin https://example.invalid/a.git || return 1
+  out="$(GIT_DIR="$d/a/.git"; export GIT_DIR; h_clear_git_env; git -C "$d/b" remote)"
+  [ -z "$out" ] || { printf 'git -C read the outer GIT_DIR instead (remote: %s)\n' "$out"; return 1; }
+}
+
 static_suite() {
   local p
   for p in "$REPO"/settings/profile.*.json; do
@@ -196,5 +205,6 @@ static_suite() {
   else
     h_skip shellcheck "shellcheck" "shellcheck not installed"
   fi
+  h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" st_check_git_env_cleared
   h_check leak-scan "no home paths, credentials or private words in tracked files" st_check_leak_scan
 }

@@ -37,6 +37,7 @@ export PUBLIC_ONLY QUICK LIVE
 
 # shellcheck source=tests/lib.sh
 . "$REPO/tests/lib.sh"
+h_clear_git_env
 h_tmp_init
 H_EXPECTED="$REPO/tests/expected-fail.txt"
 if [ "$PUBLIC_ONLY" -eq 0 ] && [ -f "$PRIVATE_DIR/expected-fail.txt" ]; then

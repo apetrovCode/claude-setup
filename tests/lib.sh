@@ -30,6 +30,14 @@ h_tmp_init() {
 
 h_suite() { printf '\n== %s\n' "$*"; }
 
+h_clear_git_env() {   # forget the GIT_* variables git exports to hooks
+  # Inside a hook, GIT_DIR and its relatives point every git command at the
+  # repo running the hook, even `git -C <another repo>`. The private suite
+  # inspects another repo, so without this a pre-push run checked this one.
+  # shellcheck disable=SC2046
+  unset $(git rev-parse --local-env-vars 2>/dev/null)
+}
+
 h_expected() {   # h_expected <id>: 0 if <id> is listed in an expected-fail file
   local id="$1" f
   while IFS= read -r f; do
