@@ -4,6 +4,7 @@
 #   tests/run.sh [--public-only] [--quick] [--live] [suite ...]
 #
 # Suites: static   public checks on settings built from the repo alone (CI-safe)
+#         self     the harness testing its own gates (CI-safe)
 #         private  ~/.claude/local/harness/checks.sh, when present
 #         hooks, dcg, scanner  not built yet
 # --public-only  skip the private suite and private expected-fail list (CI)
@@ -27,12 +28,12 @@ for a in "$@"; do
     --public-only) PUBLIC_ONLY=1 ;;
     --quick)       QUICK=1 ;;
     --live)        LIVE=1 ;;
-    -h|--help)     sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)     sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*)            printf 'unknown flag: %s\n' "$a" >&2; exit 2 ;;
     *)             SUITES="$SUITES $a" ;;
   esac
 done
-[ -n "$SUITES" ] || SUITES="static private hooks dcg scanner"
+[ -n "$SUITES" ] || SUITES="static self private hooks dcg scanner"
 export PUBLIC_ONLY QUICK LIVE
 
 # shellcheck source=tests/lib.sh
@@ -49,18 +50,18 @@ for s in $SUITES; do
   case "$s" in
     static)
       h_suite "static (public)"
-      # shellcheck source=tests/static.sh
-      . "$REPO/tests/static.sh"
-      static_suite
+      h_run_suite suite-static "$REPO/tests/static.sh" static_suite
+      ;;
+    self)
+      h_suite "self-tests (public)"
+      h_run_suite suite-self "$REPO/tests/self.sh" self_suite
       ;;
     private)
       h_suite "private"
       if [ "$PUBLIC_ONLY" -eq 1 ]; then
         h_skip private "private checks" "--public-only"
       elif [ -f "$PRIVATE_DIR/checks.sh" ]; then
-        # shellcheck disable=SC1091
-        . "$PRIVATE_DIR/checks.sh"
-        private_suite
+        h_run_suite suite-private "$PRIVATE_DIR/checks.sh" private_suite
       else
         h_skip private "private checks" "no private harness layer on this machine"
       fi

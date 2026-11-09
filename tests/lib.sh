@@ -107,6 +107,32 @@ h_version_ge() {   # h_version_ge <a> <b>: 0 if version a >= version b (numeric,
   return 0
 }
 
+h_results() { printf '%s' $((H_PASS + H_FAIL + H_XFAIL + H_XPASS + H_SKIP + H_WARN)); }
+
+h_run_suite() {   # h_run_suite <id> <file> <entry function>: load a suite file, then run it
+  # A suite that fails to load, or loads without its entry function, reports
+  # nothing at all, and an empty report would otherwise read as a pass.
+  local _rs_id="$1" _rs_file="$2" _rs_fn="$3" _rs_before
+  # shellcheck disable=SC1090
+  if ! . "$_rs_file"; then
+    H_FAIL=$((H_FAIL + 1))
+    printf '  FAIL  %s - %s did not load\n' "$_rs_id" "${_rs_file##*/}"
+    return 1
+  fi
+  if ! declare -F "$_rs_fn" >/dev/null; then
+    H_FAIL=$((H_FAIL + 1))
+    printf '  FAIL  %s - %s defines no %s\n' "$_rs_id" "${_rs_file##*/}" "$_rs_fn"
+    return 1
+  fi
+  _rs_before="$(h_results)"
+  "$_rs_fn"
+  if [ "$(h_results)" -eq "$_rs_before" ]; then
+    H_FAIL=$((H_FAIL + 1))
+    printf '  FAIL  %s - %s reported nothing\n' "$_rs_id" "$_rs_fn"
+    return 1
+  fi
+}
+
 h_summary() {
   local total=$((H_PASS + H_FAIL + H_XFAIL + H_XPASS))
   printf '\nchecks %d: ok %d, xfail %d, FAIL %d, XPASS %d, skipped %d, warnings %d\n' \
