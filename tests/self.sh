@@ -115,9 +115,32 @@ sf_check_push_scan() {
   [ -z "$bad" ] || { printf 'push scan got wrong:%s\n' "${bad#;}"; return 1; }
 }
 
+# A leak scan without a private-word list has to say so. --public-only (CI)
+# shows a skip; any other run fails rather than pass on a partial scan. A
+# linked worktree uses its main worktree's list.
+sf_check_missing_word_list() {
+  local d out bad=""
+  d="$(mktemp -d "$H_TMP/nolist.XXXXXX")" || return 1
+  sf_git init -q "$d/r" && printf 'x\n' > "$d/r/a.txt" && sf_git -C "$d/r" add a.txt \
+    && sf_git -C "$d/r" commit -qm init && sf_git -C "$d/r" worktree add -q "$d/wt" -b wt || return 1
+  # shellcheck source=tests/static.sh
+  . "$REPO/tests/static.sh"
+  out="$(ST_SCAN_ROOT="$d/r"; PUBLIC_ONLY=1; st_leak_checks 2>&1)"
+  sf_has "$out" "skip  private-words" || bad="$bad; --public-only shows no skip"
+  sf_has "$out" "or private words" && bad="$bad; --public-only still claims a private-word scan"
+  out="$(ST_SCAN_ROOT="$d/r"; PUBLIC_ONLY=0; st_leak_checks 2>&1)"
+  sf_has "$out" "FAIL  private-words" || bad="$bad; a run with the private layer passes without a list"
+  : > "$d/r/.scrub-words"
+  out="$(ST_SCAN_ROOT="$d/wt"; PUBLIC_ONLY=0; st_leak_checks 2>&1)"
+  sf_has "$out" "ok    leak-scan - no home paths, credential shapes or private words" \
+    || bad="$bad; a linked worktree does not use the main worktree's list"
+  [ -z "$bad" ] || { printf 'without a word list:%s\n' "${bad#;}"; return 1; }
+}
+
 self_suite() {
   h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" sf_check_git_env_cleared
   h_check suite-load-guard "a suite that fails to load or reports nothing fails the run" sf_check_suite_load_guard
   h_check scanner-hides-hits "the leak scanner reports where a hit is, never the matched text" sf_check_scanner_hides_hits
   h_check push-scan "pre-push scans every commit a push publishes, messages included" sf_check_push_scan
+  h_check missing-word-list "a leak scan without a private-word list says so" sf_check_missing_word_list
 }

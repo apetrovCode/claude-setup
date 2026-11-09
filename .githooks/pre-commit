@@ -10,6 +10,7 @@
 #   --push R   scan every commit a push to remote R would publish: its added
 #              lines, file names and message. Reads git's pre-push lines on
 #              stdin; called by .githooks/pre-push
+#   --scrub-list  print the private-word list in use; exit 1 if there is none
 #
 # Hits are reported by file and line, never by the matched text: the report
 # lands in terminals, hook logs and agent transcripts.
@@ -21,7 +22,7 @@ set -uo pipefail
 
 MODE="${1:-staged}"
 case "$MODE" in
-  staged|--all|--push) ;;
+  staged|--all|--push|--scrub-list) ;;
   *) printf 'pre-commit: unknown mode %s\n' "$MODE" >&2; exit 2 ;;
 esac
 REMOTE="${2:-}"   # --push only: the remote's name, or its URL for an unnamed push
@@ -40,6 +41,11 @@ if [ ! -f "$scrub" ]; then
   common=$(git rev-parse --git-common-dir 2>/dev/null) \
     && main_root=$(cd "$common/.." 2>/dev/null && pwd) \
     && [ -f "$main_root/.scrub-words" ] && scrub="$main_root/.scrub-words"
+fi
+if [ "$MODE" = "--scrub-list" ]; then
+  [ -f "$scrub" ] || exit 1
+  printf '%s\n' "$scrub"
+  exit 0
 fi
 
 fail=0

@@ -161,8 +161,32 @@ st_check_shellcheck() {
   (cd "$REPO" && shellcheck -x -S warning $files)
 }
 
+st_scan() {   # st_scan <scanner args>: the repo's leak scanner, run in $ST_SCAN_ROOT (default: the repo)
+  (cd "${ST_SCAN_ROOT:-$REPO}" && bash "$REPO/.githooks/pre-commit" "$@")
+}
+
 st_check_leak_scan() {
-  (cd "$REPO" && bash .githooks/pre-commit --all)
+  st_scan --all
+}
+
+st_check_word_list() {
+  st_scan --scrub-list >/dev/null 2>&1 && return 0
+  printf 'no .scrub-words in this checkout or its main worktree, so private words went unscanned.\n'
+  printf 'Create the list (an empty file opts out), or run with --public-only.\n'
+  return 1
+}
+
+st_leak_checks() {   # the leak scan over tracked files, and whether it covered private words
+  if st_scan --scrub-list >/dev/null 2>&1; then
+    h_check leak-scan "no home paths, credential shapes or private words in tracked files" st_check_leak_scan
+    return
+  fi
+  h_check leak-scan "no home paths or credential shapes in tracked files" st_check_leak_scan
+  if [ "${PUBLIC_ONLY:-0}" -eq 1 ]; then
+    h_skip private-words "private-word scan" "no .scrub-words list here"
+  else
+    h_check private-words "the leak scan covered private words" st_check_word_list
+  fi
 }
 
 static_suite() {
@@ -196,5 +220,5 @@ static_suite() {
   else
     h_skip shellcheck "shellcheck" "shellcheck not installed"
   fi
-  h_check leak-scan "no home paths, credentials or private words in tracked files" st_check_leak_scan
+  st_leak_checks
 }
