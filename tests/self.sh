@@ -276,6 +276,28 @@ sf_check_prepush_log() {
   [ -z "$bad" ] || { printf 'pre-push log:%s\n' "${bad#;}"; return 1; }
 }
 
+# A push publishes more than commit content: author and committer identities,
+# ref names and annotated tag objects. A ref to a blob, a tree or an object the
+# clone lacks is refused, since the scan reads commits and tags only.
+sf_check_push_refs() {
+  local d tag blob bad=""
+  d="$(mktemp -d "$H_TMP/pushrefs.XXXXXX")" && sf_push_repo "$d" || return 1
+  sf_git -C "$SF_R" checkout -q -b ident "$SF_C0" && sf_add "$SF_R" i.txt 'clean\n' \
+    && sf_git -C "$SF_R" -c user.email="dev@$SF_WORD.example" commit -qm ident || return 1
+  sf_scan_branch ident && bad="$bad; a private word in an author email"
+  if SF_OUT="$(sf_scan_push "$SF_R" "refs/heads/$SF_WORD-wip $SF_C0 refs/heads/$SF_WORD-wip $SF_ZERO")"; then
+    bad="$bad; a private word in a ref name"
+  elif sf_has "$SF_OUT" "$SF_WORD"; then bad="$bad; a report repeats the ref name"; fi
+  sf_git -C "$SF_R" tag -a v1 -m "about $SF_WORD" "$SF_C0" || return 1
+  tag="$(git -C "$SF_R" rev-parse refs/tags/v1)"
+  SF_OUT="$(sf_scan_push "$SF_R" "refs/tags/v1 $tag refs/tags/v1 $SF_ZERO")" && bad="$bad; a private word in a tag message"
+  blob="$(printf 'x\n' | git -C "$SF_R" hash-object -w --stdin)" || return 1
+  SF_OUT="$(sf_scan_push "$SF_R" "refs/tags/b $blob refs/tags/b $SF_ZERO")" && bad="$bad; a ref to a blob"
+  SF_OUT="$(sf_scan_push "$SF_R" "refs/heads/z $(printf '%040d' 1) refs/heads/z $SF_ZERO")" \
+    && bad="$bad; a ref to an object the clone lacks"
+  [ -z "$bad" ] || { printf 'push scan got wrong:%s\n' "${bad#;}"; return 1; }
+}
+
 self_suite() {
   h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" sf_check_git_env_cleared
   h_check suite-load-guard "a suite that fails to load or reports nothing fails the run" sf_check_suite_load_guard
@@ -283,6 +305,7 @@ self_suite() {
   h_check scanner-content "the file scan handles binary, non-UTF-8, odd word lists and embedded keys" sf_check_scanner_content
   h_check push-scan "pre-push scans every commit a push publishes, messages included" sf_check_push_scan
   h_check push-content "the push scan handles binary, non-UTF-8, replace refs and odd names" sf_check_push_content
+  h_check push-refs "the push scan covers identities, ref names and tags, and refuses other objects" sf_check_push_refs
   h_check missing-word-list "a leak scan without a private-word list says so" sf_check_missing_word_list
   h_check prepush-log-private "pre-push logs are private, inside the clone, and pruned" sf_check_prepush_log
 }

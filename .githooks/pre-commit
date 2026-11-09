@@ -7,9 +7,10 @@
 #
 #   (no args)  scan staged files          — the git hook
 #   --all      scan every tracked file    — called by ./install.sh doctor
-#   --push R   scan every commit a push to remote R would publish: its added
-#              lines, file names and message. Reads git's pre-push lines on
-#              stdin; called by .githooks/pre-push
+#   --push R   scan what a push to remote R would publish: each new commit's
+#              added lines, file names, message, author and committer, plus
+#              the pushed ref names and tag objects. Reads git's pre-push
+#              lines on stdin; called by .githooks/pre-push
 #   --scrub-list  print the private-word list in use; exit 1 if there is none
 #
 # Hits are reported by file and line, never by the matched text: the report
@@ -117,27 +118,56 @@ scan_text() {   # scan_text <label> <text> [names]: every pattern over text held
 
 # --- what a push publishes -------------------------------------------------
 
-push_commits() {   # git's pre-push lines on stdin -> each commit the push would publish
-  local lsha rsha rtip known=""
+peel() {   # peel <label> <sha>: scan each tag object on the way down; set PEELED to the commit
+  local label="$1" sha="$2" type
+  PEELED=""
+  while :; do
+    type=$(git cat-file -t "$sha" 2>/dev/null) || type=missing
+    case "$type" in
+      commit)  PEELED="$sha"; return 0 ;;
+      tag)     scan_text "$label: a tag object" "$(git cat-file tag "$sha")"
+               sha=$(git cat-file tag "$sha" | sed -n 's/^object //p' | head -n 1) ;;
+      missing) report "$label points at an object this clone does not have" "nothing could be scanned"
+               return 1 ;;
+      *)       report "$label points at a $type, not a commit or a tag" \
+                 "the scan reads commits and tags only: check it by hand, then push with --no-verify"
+               return 1 ;;
+    esac
+  done
+}
+
+push_commits() {   # push_commits <git's pre-push lines>: set COMMITS to each commit the push would publish
+  local lref lsha rref rsha rtip known="" list i=0
   # Commits already on the remote being pushed to are public; commits only
   # another remote has are not. A push to a bare URL scans all it sends.
   if [ -n "$REMOTE" ] && git remote | grep -qxF -- "$REMOTE"; then
     known="--remotes=$REMOTE"
   fi
-  while read -r _ lsha _ rsha; do
-    case "${lsha:-0}" in *[!0]*) ;; *) continue ;; esac   # deleting a ref publishes nothing
+  COMMITS=""
+  while read -r lref lsha rref rsha; do
+    [ -n "${lsha:-}" ] || continue
+    i=$((i + 1))
+    case "$lsha" in *[!0]*) ;; *) continue ;; esac   # deleting a ref publishes nothing
+    # Ref names are published too. A ref is reported by its place in the push,
+    # not by its name, which may be the very word that matched.
+    scan_text "pushed ref #$i: its name" "$lref
+$rref" names
+    peel "pushed ref #$i" "$lsha" || continue
     rtip=""
     case "${rsha:-0}" in
       *[!0]*) git rev-parse -q --verify "$rsha^{commit}" >/dev/null 2>&1 && rtip="$rsha" ;;
     esac
     if [ -n "$rtip" ]; then
-      git rev-list "$rtip..$lsha"
+      list=$(git rev-list "$rtip..$PEELED")
     elif [ -n "$known" ]; then
-      git rev-list "$lsha" --not "$known"   # a new ref, or a remote tip this clone lacks
+      list=$(git rev-list "$PEELED" --not "$known")   # a new ref, or a remote tip this clone lacks
     else
-      git rev-list "$lsha"
-    fi
-  done | awk '!seen[$0]++'
+      list=$(git rev-list "$PEELED")
+    fi || { report "pushed ref #$i: git rev-list failed" "nothing it publishes was scanned"; continue; }
+    COMMITS="$COMMITS
+$list"
+  done <<< "$1"
+  COMMITS=$(printf '%s\n' "$COMMITS" | awk 'NF && !seen[$0]++')
 }
 
 # The patch a commit adds against its first parent, or against nothing for a
@@ -173,9 +203,10 @@ added_lines() {   # added_lines <sha>: "path TAB line TAB text" for each line a 
   ' 2>/dev/null
 }
 
-scan_commit() {   # scan_commit <sha>: one commit's message, file names and added lines
+scan_commit() {   # scan_commit <sha>: one commit's identities, message, file names and added lines
   local c="$1" short rows content where flag pat desc idx at
   short=$(git rev-parse --short "$c")
+  scan_text "commit $short: its author or committer" "$(git log -1 --format='%an <%ae>%n%cn <%ce>' "$c")"
   scan_text "commit $short: its message" "$(git log -1 --format=%B "$c")"
   scan_text "commit $short: a file name" "$(commit_names "$c")" names
   if ! rows=$(added_lines "$c"); then
@@ -195,13 +226,13 @@ scan_commit() {   # scan_commit <sha>: one commit's message, file names and adde
 }
 
 if [ "$MODE" = "--push" ]; then
-  commits=$(push_commits)
+  push_commits "$(cat)"
   n=0
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     scan_commit "$c"
     n=$((n + 1))
-  done <<< "$commits"
+  done <<< "$COMMITS"
   if [ "$fail" -ne 0 ]; then
     printf '\n  Nothing was pushed. History keeps what a later commit removes, so\n' >&2
     printf '  rewrite the commits above (git rebase -i) before pushing again.\n\n' >&2
