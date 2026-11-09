@@ -7,21 +7,45 @@
 #      names, messages), from the ref lines git passes on stdin;
 #   2. the harness suite (tests/run.sh), against the working tree.
 #
-# The output is kept under ~/.claude/local/harness/logs/ (or $TMPDIR on a machine
-# without a local layer), so a commit that fixes a caught problem can cite it.
+# Each run is logged, mode 0600, under ~/.claude/local/harness/logs/, or inside
+# this clone's git dir on a machine without the private layer; never in a shared
+# /tmp. The newest 30 are kept. Hits show as file and line, never as the matched
+# text. A commit that fixes a caught problem cites the log's file name and the
+# check id, not the log's contents.
+#
+#   pre-push --log-path   create the log directory, print where this run's log
+#                         goes, and exit (used by the self-tests)
 #
 # Bypass: git push --no-verify   (think first)
 
 set -uo pipefail
+umask 077
 
 root=$(git rev-parse --show-toplevel) || exit 0
-base="${CLAUDE_SETUP_HARNESS_DIR:-$HOME/.claude/local/harness}"
-if [ -d "$(dirname "$base")" ] && mkdir -p "$base/logs" 2>/dev/null; then
-  logdir="$base/logs"
-else
-  logdir="${TMPDIR:-/tmp}"
+KEEP=30
+
+log_path() {   # create the log directory, prune old logs, print this run's log path
+  local base dir log
+  base="${CLAUDE_SETUP_HARNESS_DIR:-$HOME/.claude/local/harness}"
+  if [ -d "$(dirname "$base")" ] && mkdir -p "$base/logs" 2>/dev/null; then
+    dir="$base/logs"
+  else
+    dir="$(git rev-parse --absolute-git-dir)/harness-logs" && mkdir -p "$dir" || return 1
+  fi
+  chmod 700 "$dir" || return 1
+  log="$dir/$(date +%Y-%m-%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo nohead).log"
+  : > "$log" || return 1
+  find "$dir" -name '*.log' ! -path "$log" -exec ls -1t {} + 2>/dev/null \
+    | sed -n "$KEEP,\$p" | while IFS= read -r old; do rm -f -- "$old"; done
+  printf '%s\n' "$log"
+}
+
+if [ "${1:-}" = "--log-path" ]; then
+  log_path
+  exit
 fi
-log="$logdir/$(date +%Y-%m-%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo nohead).log"
+
+log=$(log_path) || log=/dev/null
 
 # One line per ref being pushed: local ref, local sha, remote ref, remote sha.
 refs=$(cat)

@@ -137,10 +137,37 @@ sf_check_missing_word_list() {
   [ -z "$bad" ] || { printf 'without a word list:%s\n' "${bad#;}"; return 1; }
 }
 
+# pre-push logs stay private: mode 0600 in a 0700 directory, inside the clone's
+# git dir when there is no private layer (never a shared /tmp), newest 30 kept.
+sf_check_prepush_log() {
+  local d dir log mode i n bad=""
+  d="$(mktemp -d "$H_TMP/prepushlog.XXXXXX")" || return 1
+  sf_git init -q "$d/r" && sf_git -C "$d/r" commit -q --allow-empty -m init || return 1
+  log="$(cd "$d/r" && CLAUDE_SETUP_HARNESS_DIR="$d/none/harness" bash "$REPO/.githooks/pre-push" --log-path </dev/null 2>/dev/null)"
+  dir="$(dirname "$log")"
+  case "$dir" in
+    "$(cd "$d/r" && git rev-parse --absolute-git-dir)"/*) ;;
+    *) printf 'without a private layer the log is not in the clone'"'"'s git dir\n'; return 1 ;;
+  esac
+  mode="$(ls -ld "$log" | cut -c1-10)"; [ "$mode" = "-rw-------" ] || bad="$bad; log mode $mode"
+  mode="$(ls -ld "$dir" | cut -c1-10)"; [ "$mode" = "drwx------" ] || bad="$bad; directory mode $mode"
+  i=0
+  while [ "$i" -lt 40 ]; do
+    : > "$dir/2020-01-01-0000$(printf '%02d' "$i")-old.log" && touch -t 202001010000 "$dir/2020-01-01-0000$(printf '%02d' "$i")-old.log"
+    i=$((i + 1))
+  done
+  log="$(cd "$d/r" && CLAUDE_SETUP_HARNESS_DIR="$d/none/harness" bash "$REPO/.githooks/pre-push" --log-path </dev/null 2>/dev/null)"
+  n="$(find "$dir" -name '*.log' | wc -l | tr -d ' ')"
+  [ "$n" -le 30 ] || bad="$bad; $n logs kept"
+  [ -f "$log" ] || bad="$bad; the newest log was pruned"
+  [ -z "$bad" ] || { printf 'pre-push log:%s\n' "${bad#;}"; return 1; }
+}
+
 self_suite() {
   h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" sf_check_git_env_cleared
   h_check suite-load-guard "a suite that fails to load or reports nothing fails the run" sf_check_suite_load_guard
   h_check scanner-hides-hits "the leak scanner reports where a hit is, never the matched text" sf_check_scanner_hides_hits
   h_check push-scan "pre-push scans every commit a push publishes, messages included" sf_check_push_scan
   h_check missing-word-list "a leak scan without a private-word list says so" sf_check_missing_word_list
+  h_check prepush-log-private "pre-push logs are private, inside the clone, and pruned" sf_check_prepush_log
 }
