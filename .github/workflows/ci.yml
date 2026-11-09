@@ -1,6 +1,6 @@
 # Public harness checks. CI sees neither the private layer nor .scrub-words, so
-# .githooks/pre-push stays the real leak gate; this job catches what a push from
-# another machine, or a skipped hook, would miss.
+# .githooks/pre-push stays the real leak gate. This job runs on pushes to main
+# and on pull requests; a branch pushed without a PR is checked by the hook only.
 name: ci
 
 on:
@@ -47,6 +47,11 @@ jobs:
           echo "$bin" >> "$GITHUB_PATH"
 
       - name: Lint workflows
+        env:
+          # zizmor's online audits (impostor commits, pins that don't match their
+          # version comment, known-vulnerable actions) read the GitHub API. The
+          # job token is read-only.
+          GH_TOKEN: ${{ github.token }}
         run: |
           actionlint -no-color
-          zizmor --offline --min-severity medium --min-confidence medium .github/workflows
+          zizmor --min-severity medium --min-confidence medium .github/workflows
