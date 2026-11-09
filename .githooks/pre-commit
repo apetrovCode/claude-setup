@@ -49,12 +49,13 @@ report() {
 }
 
 scan() {   # scan <grep-flag> <pattern> <description>
-  local flag="$1" pat="$2" desc="$3" f hits
+  local flag="$1" pat="$2" desc="$3" f lines
   while IFS= read -r f; do
     [ -f "$f" ] || continue
-    if hits=$(grep -n $flag -- "$pat" "$f" 2>/dev/null); then
-      report "$f $desc" "$hits"
-    fi
+    # Line numbers only: the matched text can be the secret itself, and this
+    # report lands in terminals, hook logs and agent transcripts.
+    lines=$(grep -n $flag -- "$pat" "$f" 2>/dev/null | cut -d: -f1 | paste -sd, -)
+    [ -n "$lines" ] && report "$f $desc" "line(s) $lines"
   done <<< "$files"
 }
 
