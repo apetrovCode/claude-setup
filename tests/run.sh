@@ -46,6 +46,10 @@ if [ "$PUBLIC_ONLY" -eq 0 ] && [ -f "$PRIVATE_DIR/expected-fail.txt" ]; then
   H_EXPECTED="$H_EXPECTED
 $PRIVATE_DIR/expected-fail.txt"
 fi
+# A run that carries the private layer must also have the private-word list.
+H_PRIVATE_LAYER=0
+if [ "$PUBLIC_ONLY" -eq 0 ] && [ -f "$PRIVATE_DIR/checks.sh" ]; then H_PRIVATE_LAYER=1; fi
+export H_PRIVATE_LAYER
 
 for s in $SUITES; do
   case "$s" in

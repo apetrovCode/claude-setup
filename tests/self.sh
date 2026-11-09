@@ -257,13 +257,19 @@ sf_check_missing_word_list() {
     && sf_git -C "$d/r" commit -qm init && sf_git -C "$d/r" worktree add -q "$d/wt" -b wt || return 1
   # shellcheck source=tests/static.sh
   . "$REPO/tests/static.sh"
-  out="$(ST_SCAN_ROOT="$d/r"; PUBLIC_ONLY=1; st_leak_checks 2>&1)"
-  sf_has "$out" "skip  private-words" || bad="$bad; --public-only shows no skip"
-  sf_has "$out" "or private words" && bad="$bad; --public-only still claims a private-word scan"
-  out="$(ST_SCAN_ROOT="$d/r"; PUBLIC_ONLY=0; st_leak_checks 2>&1)"
+  # H_PRIVATE_LAYER is what run.sh sets: 1 when the private layer runs, 0 under
+  # --public-only (CI) or on a machine without the layer.
+  out="$(ST_SCAN_ROOT="$d/r"; H_PRIVATE_LAYER=0; st_leak_checks 2>&1)"
+  sf_has "$out" "skip  private-words" || bad="$bad; a run without the private layer shows no skip"
+  sf_has "$out" "or private words" && bad="$bad; a run without the private layer claims a private-word scan"
+  out="$(ST_SCAN_ROOT="$d/r"; H_PRIVATE_LAYER=1; st_leak_checks 2>&1)"
   sf_has "$out" "FAIL  private-words" || bad="$bad; a run with the private layer passes without a list"
   : > "$d/r/.scrub-words"
-  out="$(ST_SCAN_ROOT="$d/wt"; PUBLIC_ONLY=0; st_leak_checks 2>&1)"
+  out="$(ST_SCAN_ROOT="$d/r"; H_PRIVATE_LAYER=1; st_leak_checks 2>&1)"
+  { sf_has "$out" "skip  private-words" && ! sf_has "$out" "or private words"; } \
+    || bad="$bad; an empty list is not reported as an opt-out"
+  printf 'w1\n' > "$d/r/.scrub-words"
+  out="$(ST_SCAN_ROOT="$d/wt"; H_PRIVATE_LAYER=1; st_leak_checks 2>&1)"
   sf_has "$out" "ok    leak-scan - no home paths, credential shapes or private words" \
     || bad="$bad; a linked worktree does not use the main worktree's list"
   [ -z "$bad" ] || { printf 'without a word list:%s\n' "${bad#;}"; return 1; }
@@ -292,6 +298,13 @@ sf_check_prepush_log() {
   n="$(find "$dir" -name '*.log' | wc -l | tr -d ' ')"
   [ "$n" -le 30 ] || bad="$bad; $n logs kept"
   [ -f "$log" ] || bad="$bad; the newest log was pruned"
+  mkdir -p "$dir/old.log" && : > "$dir/old.log/keep" && touch -t 202001010000 "$dir/old.log"
+  log="$(cd "$d/r" && CLAUDE_SETUP_HARNESS_DIR="$d/none/harness" bash "$REPO/.githooks/pre-push" --log-path </dev/null 2>/dev/null)"
+  [ -f "$dir/old.log/keep" ] || bad="$bad; pruning reached into a directory"
+  # A private layer's existing logs directory is tightened, not just new ones.
+  mkdir -p "$d/layer/harness/logs" && chmod 755 "$d/layer/harness/logs"
+  log="$(cd "$d/r" && CLAUDE_SETUP_HARNESS_DIR="$d/layer/harness" bash "$REPO/.githooks/pre-push" --log-path </dev/null 2>/dev/null)"
+  mode="$(ls -ld "$d/layer/harness/logs" | cut -c1-10)"; [ "$mode" = "drwx------" ] || bad="$bad; an existing logs directory stays $mode"
   [ -z "$bad" ] || { printf 'pre-push log:%s\n' "${bad#;}"; return 1; }
 }
 
@@ -317,6 +330,21 @@ sf_check_push_refs() {
   [ -z "$bad" ] || { printf 'push scan got wrong:%s\n' "${bad#;}"; return 1; }
 }
 
+# Outside a work tree the scanner and pre-push fail closed instead of passing.
+sf_check_no_work_tree() {
+  local d bad=""
+  d="$(mktemp -d "$H_TMP/notree.XXXXXX")" || return 1
+  (cd "$d" && GIT_CEILING_DIRECTORIES="$H_TMP" bash "$REPO/.githooks/pre-commit" --all >/dev/null 2>&1) \
+    && bad="$bad; --all passed"
+  (cd "$d" && GIT_CEILING_DIRECTORIES="$H_TMP" bash "$REPO/.githooks/pre-commit" --scrub-list >/dev/null 2>&1) \
+    && bad="$bad; --scrub-list reported a list"
+  (cd "$d" && printf '' | GIT_CEILING_DIRECTORIES="$H_TMP" bash "$REPO/.githooks/pre-commit" --push origin >/dev/null 2>&1) \
+    && bad="$bad; --push passed"
+  (cd "$d" && printf '' | GIT_CEILING_DIRECTORIES="$H_TMP" bash "$REPO/.githooks/pre-push" origin x >/dev/null 2>&1) \
+    && bad="$bad; pre-push passed"
+  [ -z "$bad" ] || { printf 'outside a work tree:%s\n' "${bad#;}"; return 1; }
+}
+
 self_suite() {
   h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" sf_check_git_env_cleared
   h_check suite-load-guard "a suite that fails to load, exits or reports nothing fails the run" sf_check_suite_load_guard
@@ -328,4 +356,5 @@ self_suite() {
   h_check push-refs "the push scan covers identities, ref names and tags, and refuses other objects" sf_check_push_refs
   h_check missing-word-list "a leak scan without a private-word list says so" sf_check_missing_word_list
   h_check prepush-log-private "pre-push logs are private, inside the clone, and pruned" sf_check_prepush_log
+  h_check no-work-tree "outside a work tree the scanner and pre-push fail closed" sf_check_no_work_tree
 }

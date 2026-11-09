@@ -169,23 +169,32 @@ st_check_leak_scan() {
   st_scan --all
 }
 
-st_check_word_list() {
-  st_scan --scrub-list >/dev/null 2>&1 && return 0
+st_check_word_list() {   # reached only when a run with the private layer has no list
   printf 'no .scrub-words in this checkout or its main worktree, so private words went unscanned.\n'
   printf 'Create the list (an empty file opts out), or run with --public-only.\n'
   return 1
 }
 
-st_leak_checks() {   # the leak scan over tracked files, and whether it covered private words
-  if st_scan --scrub-list >/dev/null 2>&1; then
+# The leak scan over tracked files, and an honest line about private words. It
+# names them only when a list with at least one word was found. Without a list,
+# a run that carries the private layer fails; any other run (CI, a fork) skips.
+st_leak_checks() {
+  local list words tab
+  tab="$(printf '\t')"
+  list="$(st_scan --scrub-list 2>/dev/null)" || list=""
+  words="${list##*"$tab"}"
+  case "$words" in ''|*[!0-9]*) words=0 ;; esac
+  if [ -n "$list" ] && [ "$words" -gt 0 ]; then
     h_check leak-scan "no home paths, credential shapes or private words in tracked files" st_check_leak_scan
     return
   fi
   h_check leak-scan "no home paths or credential shapes in tracked files" st_check_leak_scan
-  if [ "${PUBLIC_ONLY:-0}" -eq 1 ]; then
-    h_skip private-words "private-word scan" "no .scrub-words list here"
-  else
+  if [ -n "$list" ]; then
+    h_skip private-words "private-word scan" ".scrub-words is empty, which opts out"
+  elif [ "${H_PRIVATE_LAYER:-0}" -eq 1 ]; then
     h_check private-words "the leak scan covered private words" st_check_word_list
+  else
+    h_skip private-words "private-word scan" "no .scrub-words list here"
   fi
 }
 

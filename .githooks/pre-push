@@ -21,7 +21,10 @@
 set -uo pipefail
 umask 077
 
-root=$(git rev-parse --show-toplevel) || exit 0
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  printf 'pre-push: not inside a git work tree; refusing to push unscanned\n' >&2
+  exit 1
+}
 KEEP=30
 
 log_path() {   # create the log directory, prune old logs, print this run's log path
@@ -35,7 +38,7 @@ log_path() {   # create the log directory, prune old logs, print this run's log 
   chmod 700 "$dir" || return 1
   log="$dir/$(date +%Y-%m-%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo nohead).log"
   : > "$log" || return 1
-  find "$dir" -name '*.log' ! -path "$log" -exec ls -1t {} + 2>/dev/null \
+  find "$dir" -maxdepth 1 -type f -name '*.log' ! -path "$log" -exec ls -1t {} + 2>/dev/null \
     | sed -n "$KEEP,\$p" | while IFS= read -r old; do rm -f -- "$old"; done
   printf '%s\n' "$log"
 }

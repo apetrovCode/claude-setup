@@ -149,11 +149,19 @@ scrub_check() {
     info "nothing tracked yet"
     return 0
   fi
-  local out
+  local out list tab
   if out="$(cd "$REPO" && bash .githooks/pre-commit --all 2>&1)"; then
-    ok "no home paths, credentials or private words in tracked files"
-    [ -f "$REPO/.scrub-words" ] \
-      || info "no .scrub-words — private-word scanning is off"
+    # Same verdict as tests/run.sh: private words are named only when the
+    # scanner found a list (here or in the main worktree) holding a word.
+    tab="$(printf '\t')"
+    list="$(cd "$REPO" && bash .githooks/pre-commit --scrub-list 2>/dev/null)" || list=""
+    case "${list##*"$tab"}" in
+      ''|0|*[!0-9]*)
+        ok "no home paths or credential shapes in tracked files"
+        info "no .scrub-words with a word in it — private-word scanning is off" ;;
+      *)
+        ok "no home paths, credential shapes or private words in tracked files" ;;
+    esac
   else
     bad "leak scan failed:"
     printf '%s\n' "$out" | sed 's/^/    /' >&2
