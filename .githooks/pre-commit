@@ -7,9 +7,9 @@
 #
 #   (no args)  scan staged files          — the git hook
 #   --all      scan every tracked file    — called by ./install.sh doctor
-#   --push     scan every commit a push would publish: its added lines, file
-#              names and message. Reads git's pre-push lines on stdin; called
-#              by .githooks/pre-push
+#   --push R   scan every commit a push to remote R would publish: its added
+#              lines, file names and message. Reads git's pre-push lines on
+#              stdin; called by .githooks/pre-push
 #
 # Hits are reported by file and line, never by the matched text: the report
 # lands in terminals, hook logs and agent transcripts.
@@ -24,6 +24,7 @@ case "$MODE" in
   staged|--all|--push) ;;
   *) printf 'pre-commit: unknown mode %s\n' "$MODE" >&2; exit 2 ;;
 esac
+REMOTE="${2:-}"   # --push only: the remote's name, or its URL for an unnamed push
 root=$(git rev-parse --show-toplevel) || exit 0
 cd "$root" || exit 0
 
@@ -98,7 +99,12 @@ scan_text() {   # scan_text <label> <text>: every pattern over text held in memo
 # --- what a push publishes -------------------------------------------------
 
 push_commits() {   # git's pre-push lines on stdin -> each commit the push would publish
-  local lsha rsha rtip
+  local lsha rsha rtip known=""
+  # Commits already on the remote being pushed to are public; commits only
+  # another remote has are not. A push to a bare URL scans all it sends.
+  if [ -n "$REMOTE" ] && git remote | grep -qxF -- "$REMOTE"; then
+    known="--remotes=$REMOTE"
+  fi
   while read -r _ lsha _ rsha; do
     case "${lsha:-0}" in *[!0]*) ;; *) continue ;; esac   # deleting a ref publishes nothing
     rtip=""
@@ -107,8 +113,10 @@ push_commits() {   # git's pre-push lines on stdin -> each commit the push would
     esac
     if [ -n "$rtip" ]; then
       git rev-list "$rtip..$lsha"
+    elif [ -n "$known" ]; then
+      git rev-list "$lsha" --not "$known"   # a new ref, or a remote tip this clone lacks
     else
-      git rev-list "$lsha" --not --remotes   # a new ref, or a remote tip this clone lacks
+      git rev-list "$lsha"
     fi
   done | awk '!seen[$0]++'
 }

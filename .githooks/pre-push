@@ -26,7 +26,7 @@ log="$logdir/$(date +%Y-%m-%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null |
 # One line per ref being pushed: local ref, local sha, remote ref, remote sha.
 refs=$(cat)
 
-printf '%s\n' "$refs" | bash "$root/.githooks/pre-commit" --push 2>&1 | tee "$log"
+printf '%s\n' "$refs" | bash "$root/.githooks/pre-commit" --push "${1:-}" 2>&1 | tee "$log"
 scan_rc=${PIPESTATUS[1]}
 
 bash "$root/tests/run.sh" 2>&1 | tee -a "$log"

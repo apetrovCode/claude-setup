@@ -65,8 +65,8 @@ sf_check_scanner_hides_hits() {
 
 sf_has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
 
-sf_scan_push() {   # sf_scan_push <repo> <pre-push stdin>: the push scan, as pre-push runs it
-  (cd "$1" && printf '%s\n' "$2" | bash "$REPO/.githooks/pre-commit" --push 2>&1)
+sf_scan_push() {   # sf_scan_push <repo> <pre-push stdin> [remote]: the push scan, as pre-push runs it
+  (cd "$1" && printf '%s\n' "$2" | bash "$REPO/.githooks/pre-commit" --push "${3:-origin}" 2>&1)
 }
 
 # The push scan covers what a push would publish: every new commit's added
@@ -108,6 +108,10 @@ sf_check_push_scan() {
   out="$(sf_scan_push "$r" "refs/heads/clean $k1 refs/heads/clean $zero
 (delete) $zero refs/heads/old $c1")"; rc=$?
   [ "$rc" -eq 0 ] || bad="$bad; a clean push plus a branch deletion (should pass)"
+  # Commits that only another remote has are not public on this one.
+  sf_git -C "$r" update-ref refs/remotes/other/main "$c2" || return 1
+  out="$(sf_scan_push "$r" "refs/heads/topic2 $c2 refs/heads/topic2 $zero" origin)"; rc=$?
+  [ "$rc" -ne 0 ] || bad="$bad; commits another remote already has, pushed to this one"
   [ -z "$bad" ] || { printf 'push scan got wrong:%s\n' "${bad#;}"; return 1; }
 }
 
