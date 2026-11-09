@@ -7,6 +7,12 @@
 #
 #   (no args)  scan staged files          — the git hook
 #   --all      scan every tracked file    — called by ./install.sh doctor
+#   --push     scan every commit a push would publish: its added lines, file
+#              names and message. Reads git's pre-push lines on stdin; called
+#              by .githooks/pre-push
+#
+# Hits are reported by file and line, never by the matched text: the report
+# lands in terminals, hook logs and agent transcripts.
 #
 # Enable:  git config core.hooksPath .githooks
 # Bypass:  git commit --no-verify   (think first)
@@ -14,22 +20,17 @@
 set -uo pipefail
 
 MODE="${1:-staged}"
+case "$MODE" in
+  staged|--all|--push) ;;
+  *) printf 'pre-commit: unknown mode %s\n' "$MODE" >&2; exit 2 ;;
+esac
 root=$(git rev-parse --show-toplevel) || exit 0
 cd "$root" || exit 0
-
-if [ "$MODE" = "--all" ]; then
-  files=$(git ls-files)
-else
-  files=$(git diff --cached --name-only --diff-filter=ACM)
-fi
-[ -z "$files" ] && exit 0
 
 # This scanner and doctor's wrapper necessarily contain every pattern they look
 # for. Excluding them is not a loophole: neither is ever a place a real secret
 # would land, and both are reviewed as code.
 SELF_EXCLUDE='^(\.githooks/pre-commit|lib/doctor\.sh)$'
-files=$(printf '%s\n' "$files" | grep -Ev "$SELF_EXCLUDE" || true)
-[ -z "$files" ] && exit 0
 
 # .scrub-words is untracked, so a linked worktree has no copy of its own. Fall
 # back to the main working tree's list rather than silently scanning without it.
@@ -48,45 +49,156 @@ report() {
   fail=1
 }
 
-scan() {   # scan <grep-flag> <pattern> <description>
-  local flag="$1" pat="$2" desc="$3" f lines
-  while IFS= read -r f; do
-    [ -f "$f" ] || continue
-    # Line numbers only: the matched text can be the secret itself, and this
-    # report lands in terminals, hook logs and agent transcripts.
-    lines=$(grep -n $flag -- "$pat" "$f" 2>/dev/null | cut -d: -f1 | paste -sd, -)
-    [ -n "$lines" ] && report "$f $desc" "line(s) $lines"
-  done <<< "$files"
+# Every pattern, one per line: grep flags, a tab, the pattern, a tab, what a
+# hit means.
+patterns() {
+  local pat w
+  # Absolute home paths leak a username, and break on every other machine.
+  printf '%s\t%s\t%s\n' -E '/(Users|home)/[a-zA-Z0-9._-]+' 'contains an absolute home path'
+  # Credential shapes are length-anchored on purpose: a bare prefix would match
+  # documentation and the tooling that looks for it.
+  for pat in 'ghp_[A-Za-z0-9]{20,}' \
+             'gho_[A-Za-z0-9]{20,}' \
+             'github_pat_[A-Za-z0-9_]{20,}' \
+             '\bAKIA[0-9A-Z]{16}\b' \
+             '\bASIA[0-9A-Z]{16}\b' \
+             'xoxb-[0-9A-Za-z-]{10,}' \
+             'sk-ant-[A-Za-z0-9_-]{20,}' \
+             '^-+BEGIN [A-Z ]*PRIVATE KEY-+'; do
+    printf '%s\t%s\t%s\n' -E "$pat" 'matches a credential pattern'
+  done
+  # Private words: .scrub-words is untracked and personal (employer name, GitHub
+  # org, account handles, internal service names). One per line, '#' comments
+  # allowed.
+  if [ -f "$scrub" ]; then
+    while IFS= read -r w; do
+      [ -n "$w" ] || continue
+      case "$w" in \#*) continue ;; esac
+      printf '%s\t%s\t%s\n' -iF "$w" "contains the private word '$w'"
+    done < "$scrub"
+  fi
+}
+PATTERNS=$(patterns)
+
+hits() {   # hits <grep flags> <pattern> [file]: line numbers of matches, comma-separated
+  local flag="$1" pat="$2"
+  shift 2
+  grep -n $flag -- "$pat" "$@" 2>/dev/null | cut -d: -f1 | paste -sd, -
 }
 
-# --- absolute home paths --------------------------------------------------
-# Leaks a username, and breaks on every other machine.
-scan "-E" '/(Users|home)/[a-zA-Z0-9._-]+' "contains an absolute home path"
+scan_text() {   # scan_text <label> <text>: every pattern over text held in memory
+  local label="$1" text="$2" flag pat desc lines
+  [ -n "$text" ] || return 0
+  while IFS=$'\t' read -r flag pat desc; do
+    lines=$(printf '%s\n' "$text" | hits "$flag" "$pat")
+    if [ -n "$lines" ]; then report "$label $desc" "line(s) $lines"; fi
+  done <<< "$PATTERNS"
+}
 
-# --- credential shapes ----------------------------------------------------
-# Length-anchored on purpose: a bare prefix would match documentation and the
-# tooling that looks for it.
-for pat in 'ghp_[A-Za-z0-9]{20,}' \
-           'gho_[A-Za-z0-9]{20,}' \
-           'github_pat_[A-Za-z0-9_]{20,}' \
-           '\bAKIA[0-9A-Z]{16}\b' \
-           '\bASIA[0-9A-Z]{16}\b' \
-           'xoxb-[0-9A-Za-z-]{10,}' \
-           'sk-ant-[A-Za-z0-9_-]{20,}' \
-           '^-+BEGIN [A-Z ]*PRIVATE KEY-+'; do
-  scan "-E" "$pat" "matches a credential pattern"
-done
+# --- what a push publishes -------------------------------------------------
 
-# --- private words --------------------------------------------------------
-# .scrub-words is untracked and personal: employer name, GitHub org, account
-# handles, internal service names. One per line, '#' comments allowed.
-if [ -f "$scrub" ]; then
-  while IFS= read -r w; do
-    [ -n "$w" ] || continue
-    case "$w" in \#*) continue ;; esac
-    scan "-iF" "$w" "contains the private word '$w'"
-  done < "$scrub"
-elif [ "$MODE" != "--all" ]; then
+push_commits() {   # git's pre-push lines on stdin -> each commit the push would publish
+  local lsha rsha rtip
+  while read -r _ lsha _ rsha; do
+    case "${lsha:-0}" in *[!0]*) ;; *) continue ;; esac   # deleting a ref publishes nothing
+    rtip=""
+    case "${rsha:-0}" in
+      *[!0]*) git rev-parse -q --verify "$rsha^{commit}" >/dev/null 2>&1 && rtip="$rsha" ;;
+    esac
+    if [ -n "$rtip" ]; then
+      git rev-list "$rtip..$lsha"
+    else
+      git rev-list "$lsha" --not --remotes   # a new ref, or a remote tip this clone lacks
+    fi
+  done | awk '!seen[$0]++'
+}
+
+# The patch a commit adds against its first parent, or against nothing for a
+# root commit. Fixed prefixes, no external diff or textconv, whatever the
+# caller's git config says.
+commit_patch() {
+  local opts="--no-color --no-ext-diff --no-textconv --unified=0 --src-prefix=a/ --dst-prefix=b/"
+  if git rev-parse -q --verify "$1^1" >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    git diff $opts "$1^1" "$1"
+  else
+    # shellcheck disable=SC2086
+    git diff-tree --root -r -p --no-commit-id $opts "$1"
+  fi
+}
+
+commit_names() {   # commit_names <sha>: the paths a commit adds, changes or renames to
+  if git rev-parse -q --verify "$1^1" >/dev/null 2>&1; then
+    git -c core.quotePath=false diff --name-only --diff-filter=d "$1^1" "$1"
+  else
+    git -c core.quotePath=false diff-tree --root -r --no-commit-id --name-only "$1"
+  fi
+}
+
+added_lines() {   # added_lines <sha>: "path TAB line TAB text" for each line a commit adds
+  commit_patch "$1" | SKIP="$SELF_EXCLUDE" awk '
+    /^diff --git /     { head = 1; next }
+    head && /^\+\+\+ / { path = substr($0, 5); sub(/^b\//, "", path)
+                         skip = (path ~ ENVIRON["SKIP"]); next }
+    /^@@ /             { head = 0; split($3, a, ","); n = substr(a[1], 2) + 0; next }
+    !head && /^\+/     { if (!skip) printf "%s\t%d\t%s\n", path, n, substr($0, 2); n++ }
+  '
+}
+
+scan_commit() {   # scan_commit <sha>: one commit's message, file names and added lines
+  local c="$1" short rows content where flag pat desc idx at
+  short=$(git rev-parse --short "$c")
+  scan_text "commit $short: its message" "$(git log -1 --format=%B "$c")"
+  scan_text "commit $short: a file name" "$(commit_names "$c")"
+  rows=$(added_lines "$c")
+  [ -n "$rows" ] || return 0
+  content=$(printf '%s\n' "$rows" | cut -f3-)
+  where=$(printf '%s\n' "$rows" | cut -f1,2 | tr '\t' ':')
+  while IFS=$'\t' read -r flag pat desc; do
+    idx=$(printf '%s\n' "$content" | hits "$flag" "$pat")
+    [ -n "$idx" ] || continue
+    at=$(printf '%s\n' "$idx" | tr ',' '\n' | while IFS= read -r i; do
+           printf '%s\n' "$where" | sed -n "${i}p"
+         done | paste -sd, -)
+    report "commit $short: an added line $desc" "at $at"
+  done <<< "$PATTERNS"
+}
+
+if [ "$MODE" = "--push" ]; then
+  commits=$(push_commits)
+  n=0
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    scan_commit "$c"
+    n=$((n + 1))
+  done <<< "$commits"
+  if [ "$fail" -ne 0 ]; then
+    printf '\n  Nothing was pushed. History keeps what a later commit removes, so\n' >&2
+    printf '  rewrite the commits above (git rebase -i) before pushing again.\n\n' >&2
+    exit 1
+  fi
+  printf '  push scan: %d commit(s), nothing found\n' "$n"
+  exit 0
+fi
+
+# --- staged or tracked files ---------------------------------------------
+
+if [ "$MODE" = "--all" ]; then
+  files=$(git ls-files)
+else
+  files=$(git diff --cached --name-only --diff-filter=ACM)
+fi
+files=$(printf '%s\n' "$files" | grep -Ev "$SELF_EXCLUDE" || true)
+[ -z "$files" ] && exit 0
+
+while IFS=$'\t' read -r flag pat desc; do
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    lines=$(hits "$flag" "$pat" "$f")
+    if [ -n "$lines" ]; then report "$f $desc" "line(s) $lines"; fi
+  done <<< "$files"
+done <<< "$PATTERNS"
+if [ ! -f "$scrub" ] && [ "$MODE" != "--all" ]; then
   printf '  note: no .scrub-words — private-word scanning is off\n' >&2
 fi
 

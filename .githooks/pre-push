@@ -2,7 +2,10 @@
 # Run the harness checks before anything leaves this machine.
 #
 # CI on a public repo only sees a leak after it is published, and it has neither
-# the private layer nor .scrub-words. This hook is the real gate.
+# the private layer nor .scrub-words. This hook is the real gate. It runs:
+#   1. the leak scan over every commit the push would publish (added lines, file
+#      names, messages), from the ref lines git passes on stdin;
+#   2. the harness suite (tests/run.sh), against the working tree.
 #
 # The output is kept under ~/.claude/local/harness/logs/ (or $TMPDIR on a machine
 # without a local layer), so a commit that fixes a caught problem can cite it.
@@ -20,11 +23,19 @@ else
 fi
 log="$logdir/$(date +%Y-%m-%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo nohead).log"
 
-bash "$root/tests/run.sh" 2>&1 | tee "$log"
+# One line per ref being pushed: local ref, local sha, remote ref, remote sha.
+refs=$(cat)
+
+printf '%s\n' "$refs" | bash "$root/.githooks/pre-commit" --push 2>&1 | tee "$log"
+scan_rc=${PIPESTATUS[1]}
+
+bash "$root/tests/run.sh" 2>&1 | tee -a "$log"
 rc=${PIPESTATUS[0]}
+[ "$scan_rc" -eq 0 ] || rc=1
+
 printf '  pre-push log: %s\n' "$log" >&2
 if [ "$rc" -ne 0 ]; then
-  printf '  Nothing was pushed: fix the FAIL/XPASS lines above, or list a known\n' >&2
-  printf '  gap in tests/expected-fail.txt with the date and the step that fixes it.\n' >&2
+  printf '  Nothing was pushed: fix the BLOCKED, FAIL or XPASS lines above, or list a\n' >&2
+  printf '  known gap in tests/expected-fail.txt with the date and the step that fixes it.\n' >&2
 fi
 exit "$rc"

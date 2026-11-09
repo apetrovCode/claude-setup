@@ -63,8 +63,57 @@ sf_check_scanner_hides_hits() {
   case "$out" in *"$tok"*) printf 'the report repeats the matched text\n'; return 1 ;; esac
 }
 
+sf_has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
+
+sf_scan_push() {   # sf_scan_push <repo> <pre-push stdin>: the push scan, as pre-push runs it
+  (cd "$1" && printf '%s\n' "$2" | bash "$REPO/.githooks/pre-commit" --push 2>&1)
+}
+
+# The push scan covers what a push would publish: every new commit's added
+# lines, file names and message. A leak that a later commit removed is still
+# in the history being pushed.
+sf_check_push_scan() {
+  local d r word tok zero c0 c1 c2 c3 c4 k1 out rc bad=""
+  d="$(mktemp -d "$H_TMP/pushscan.XXXXXX")" || return 1
+  r="$d/r"
+  word="zq$(printf 'vx')kwplm"   # a private word, built here
+  tok="$(sf_fake_token)"
+  zero="$(printf '%040d' 0)"
+  sf_git init -q "$r" && sf_git init -q --bare "$d/remote.git" \
+    && sf_git -C "$r" remote add origin "$d/remote.git" || return 1
+  printf '%s\n' "$word" > "$r/.scrub-words"   # untracked, like the real list
+  printf 'clean\n' > "$r/README" && sf_git -C "$r" add README \
+    && sf_git -C "$r" commit -qm start && sf_git -C "$r" push -q origin main || return 1
+  c0="$(git -C "$r" rev-parse HEAD)"
+  printf 'about %s\n' "$word" > "$r/notes" && sf_git -C "$r" add notes \
+    && sf_git -C "$r" commit -qm "add notes" || return 1
+  c1="$(git -C "$r" rev-parse HEAD)"
+  sf_git -C "$r" rm -q notes && sf_git -C "$r" commit -qm "drop notes" || return 1
+  c2="$(git -C "$r" rev-parse HEAD)"
+  sf_git -C "$r" commit -q --allow-empty -m "fix for $word" || return 1
+  c3="$(git -C "$r" rev-parse HEAD)"
+  printf 'k=%s\n' "$tok" > "$r/cfg" && sf_git -C "$r" add cfg && sf_git -C "$r" commit -qm cfg || return 1
+  c4="$(git -C "$r" rev-parse HEAD)"
+  k1="$(sf_git -C "$r" commit-tree -m clean -p "$c0" "$c0^{tree}")" || return 1
+
+  out="$(sf_scan_push "$r" "refs/heads/main $c2 refs/heads/main $c0")"; rc=$?
+  { [ "$rc" -ne 0 ] && sf_has "$out" "$(git -C "$r" rev-parse --short "$c1")"; } \
+    || bad="$bad; a word added and then removed again"
+  out="$(sf_scan_push "$r" "refs/heads/main $c3 refs/heads/main $c2")"; rc=$?
+  { [ "$rc" -ne 0 ] && sf_has "$out" message; } || bad="$bad; a word in a commit message"
+  out="$(sf_scan_push "$r" "refs/heads/topic $c2 refs/heads/topic $zero")"; rc=$?
+  [ "$rc" -ne 0 ] || bad="$bad; a new branch"
+  out="$(sf_scan_push "$r" "refs/heads/main $c4 refs/heads/main $c3")"; rc=$?
+  { [ "$rc" -ne 0 ] && ! sf_has "$out" "$tok"; } || bad="$bad; a token, caught without repeating it"
+  out="$(sf_scan_push "$r" "refs/heads/clean $k1 refs/heads/clean $zero
+(delete) $zero refs/heads/old $c1")"; rc=$?
+  [ "$rc" -eq 0 ] || bad="$bad; a clean push plus a branch deletion (should pass)"
+  [ -z "$bad" ] || { printf 'push scan got wrong:%s\n' "${bad#;}"; return 1; }
+}
+
 self_suite() {
   h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" sf_check_git_env_cleared
   h_check suite-load-guard "a suite that fails to load or reports nothing fails the run" sf_check_suite_load_guard
   h_check scanner-hides-hits "the leak scanner reports where a hit is, never the matched text" sf_check_scanner_hides_hits
+  h_check push-scan "pre-push scans every commit a push publishes, messages included" sf_check_push_scan
 }
