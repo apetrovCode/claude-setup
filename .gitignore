@@ -45,6 +45,9 @@
 
 !skills/
 !skills/**
+# ...except Python byte-code: binary, and it embeds absolute source paths.
+skills/**/__pycache__/
+skills/**/*.pyc
 
 !mcp/
 !mcp/*.json

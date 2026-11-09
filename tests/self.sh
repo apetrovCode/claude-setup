@@ -65,6 +65,119 @@ sf_check_scanner_hides_hits() {
 
 sf_has() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
 
+sf_utf8_locale() {   # a UTF-8 locale this machine has: en_US.UTF-8 on macOS, C.UTF-8 on Linux
+  locale -a 2>/dev/null | grep -i -m 1 -E '^(C|en_US)\.utf-?8$'
+}
+
+sf_add() {   # sf_add <repo> <file> <printf format> [args]: write a file and stage it
+  local r="$1" f="$2" fmt="$3"
+  shift 3
+  mkdir -p "$(dirname "$r/$f")" || return 1
+  # shellcheck disable=SC2059
+  printf "$fmt" "$@" > "$r/$f" && sf_git -C "$r" add -f -- "$f"
+}
+
+sf_all_repo() {   # sf_all_repo <dir> <.scrub-words printf format> [args]: a repo with that list
+  local d="$1" fmt="$2"
+  shift 2
+  sf_git init -q "$d" || return 1
+  # shellcheck disable=SC2059
+  printf "$fmt" "$@" > "$d/.scrub-words"
+}
+
+sf_all() {   # sf_all <repo>: the --all scan in $SF_LOC; output in SF_OUT, status the scan's
+  SF_OUT="$(cd "$1" && LC_ALL="${SF_LOC:-C}" bash "$REPO/.githooks/pre-commit" --all 2>&1)"
+}
+
+# sf_push_repo <dir>: a repo with a bare remote, a fake private word in its
+# .scrub-words, and one clean commit already pushed. Sets SF_R, SF_C0, SF_WORD
+# and SF_ZERO.
+sf_push_repo() {
+  SF_R="$1/r"
+  SF_WORD="zq$(printf 'vx')kwplm"
+  SF_ZERO="$(printf '%040d' 0)"
+  sf_git init -q "$SF_R" && sf_git init -q --bare "$1/remote.git" \
+    && sf_git -C "$SF_R" remote add origin "$1/remote.git" || return 1
+  printf '%s\n' "$SF_WORD" > "$SF_R/.scrub-words"
+  sf_add "$SF_R" README 'clean\n' && sf_git -C "$SF_R" commit -qm start \
+    && sf_git -C "$SF_R" push -q origin main || return 1
+  SF_C0="$(git -C "$SF_R" rev-parse HEAD)"
+}
+
+sf_branch_commit() {   # sf_branch_commit <branch> <file> <printf format> [args]: one commit on a new branch from SF_C0
+  local b="$1"
+  shift
+  sf_git -C "$SF_R" checkout -q -b "$b" "$SF_C0" && sf_add "$SF_R" "$@" && sf_git -C "$SF_R" commit -qm "$b"
+}
+
+sf_scan_branch() {   # sf_scan_branch <branch>: push-scan it as a new ref, in $SF_LOC; output in SF_OUT
+  local tip
+  tip="$(git -C "$SF_R" rev-parse "refs/heads/$1")" || return 2
+  SF_OUT="$(LC_ALL="${SF_LOC:-C}" sf_scan_push "$SF_R" "refs/heads/$1 $tip refs/heads/$1 $SF_ZERO")"
+}
+
+# The file scan (staged and --all) reads binary and non-UTF-8 files, takes the
+# word list however it was saved, finds embedded private keys and covers its
+# own scripts. Its reports never repeat a token or a private word.
+sf_check_scanner_content() {
+  local d word tok SF_LOC bad=""
+  d="$(mktemp -d "$H_TMP/content.XXXXXX")" || return 1
+  word="zq$(printf 'vx')kwplm"
+  tok="$(sf_fake_token)"
+  SF_LOC="$(sf_utf8_locale)"
+  sf_all_repo "$d/plain" '%s\n' "$word" && sf_add "$d/plain" a.txt 'x %s y\n' "$word" || return 1
+  sf_all "$d/plain" || sf_has "$SF_OUT" "$word" && bad="$bad; a report repeats the private word"
+  sf_all_repo "$d/nul" '' && sf_add "$d/nul" asset.dat 'BIN\000\nk=%s\n' "$tok" || return 1
+  if sf_all "$d/nul"; then bad="$bad; a token in a file with a NUL byte"
+  elif sf_has "$SF_OUT" "$tok"; then bad="$bad; a report repeats the token"; fi
+  sf_all_repo "$d/latin" '%s\n' "$word" && sf_add "$d/latin" l1.txt 'caf\351 %s\n' "$word" || return 1
+  sf_all "$d/latin" && bad="$bad; a word on a line with a Latin-1 byte"
+  sf_all_repo "$d/crlf" '%s\r\n' "$word" && sf_add "$d/crlf" a.txt 'x %s y\n' "$word" || return 1
+  sf_all "$d/crlf" && bad="$bad; a word list saved with CRLF"
+  sf_all_repo "$d/nonl" '%s' "$word" && sf_add "$d/nonl" a.txt 'x %s y\n' "$word" || return 1
+  sf_all "$d/nonl" && bad="$bad; a word list without a final newline"
+  sf_all_repo "$d/space" '%s \n' "$word" && sf_add "$d/space" a.txt 'x %s y\n' "$word" || return 1
+  sf_all "$d/space" && bad="$bad; a word with a trailing space in the list"
+  sf_all_repo "$d/key" '' \
+    && sf_add "$d/key" k.json '{"private_key": "%sBEGIN PRIVATE KEY%s\\nabc"}\n' '-----' '-----' || return 1
+  sf_all "$d/key" && bad="$bad; a private key inside a JSON value"
+  sf_all_repo "$d/doctor" '%s\n' "$word" && sf_add "$d/doctor" lib/doctor.sh '# %s\n' "$word" || return 1
+  sf_all "$d/doctor" && bad="$bad; a private word in lib/doctor.sh"
+  sf_all_repo "$d/syntax" '' && sf_add "$d/syntax" bad.sh 'if then %s\n' "$tok" || return 1
+  sf_all "$d/syntax"
+  sf_has "$SF_OUT" "$tok" && bad="$bad; the syntax report repeats a token"
+  [ -z "$bad" ] || { printf 'file scan got wrong:%s\n' "${bad#;}"; return 1; }
+}
+
+# The push scan reads content git calls binary or that is not UTF-8, sees
+# through replace refs, handles odd file names, and checks file names without
+# mistaking a repo path such as tests/fixtures/home/ for a home directory.
+sf_check_push_content() {
+  local d cr k1 SF_LOC bad=""
+  d="$(mktemp -d "$H_TMP/pushcontent.XXXXXX")" && sf_push_repo "$d" || return 1
+  SF_LOC="$(sf_utf8_locale)"
+  sf_branch_commit nul asset.dat 'BIN\000\nowner=%s\n' "$SF_WORD" || return 1
+  sf_scan_branch nul && bad="$bad; a file with a NUL byte"
+  sf_branch_commit attr .gitattributes '*.json -diff\n' && sf_add "$SF_R" x.json '{"o": "%s"}\n' "$SF_WORD" \
+    && sf_git -C "$SF_R" commit -qm json || return 1
+  sf_scan_branch attr && bad="$bad; a file marked -diff"
+  sf_branch_commit latin l1.txt 'caf\351 %s\n' "$SF_WORD" || return 1
+  sf_scan_branch latin && bad="$bad; a line with a Latin-1 byte"
+  sf_branch_commit rep rep.txt 'about %s\n' "$SF_WORD" || return 1
+  cr="$(git -C "$SF_R" rev-parse HEAD)"
+  k1="$(sf_git -C "$SF_R" commit-tree -m clean -p "$SF_C0" "$SF_C0^{tree}")" \
+    && sf_git -C "$SF_R" replace "$cr" "$k1" || return 1
+  sf_scan_branch rep && bad="$bad; a leak behind a replace ref"
+  sf_branch_commit keyname 'my key.pem' '%sBEGIN PRIVATE KEY%s\nabc\n' '-----' '-----' || return 1
+  sf_scan_branch keyname && bad="$bad; a key in a file whose name has a space"
+  sf_branch_commit fname "notes-$SF_WORD.txt" 'clean\n' || return 1
+  if sf_scan_branch fname; then bad="$bad; a private word in a file name"
+  elif sf_has "$SF_OUT" "$SF_WORD"; then bad="$bad; a report repeats the private word"; fi
+  sf_branch_commit fixture "tests/fixtures/$(printf 'ho%s' me)/user1/settings.json" '{}\n' || return 1
+  sf_scan_branch fixture || bad="$bad; a repo path under home/ was blocked"
+  [ -z "$bad" ] || { printf 'push scan got wrong:%s\n' "${bad#;}"; return 1; }
+}
+
 sf_scan_push() {   # sf_scan_push <repo> <pre-push stdin> [remote]: the push scan, as pre-push runs it
   (cd "$1" && printf '%s\n' "$2" | bash "$REPO/.githooks/pre-commit" --push "${3:-origin}" 2>&1)
 }
@@ -167,7 +280,9 @@ self_suite() {
   h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" sf_check_git_env_cleared
   h_check suite-load-guard "a suite that fails to load or reports nothing fails the run" sf_check_suite_load_guard
   h_check scanner-hides-hits "the leak scanner reports where a hit is, never the matched text" sf_check_scanner_hides_hits
+  h_check scanner-content "the file scan handles binary, non-UTF-8, odd word lists and embedded keys" sf_check_scanner_content
   h_check push-scan "pre-push scans every commit a push publishes, messages included" sf_check_push_scan
+  h_check push-content "the push scan handles binary, non-UTF-8, replace refs and odd names" sf_check_push_content
   h_check missing-word-list "a leak scan without a private-word list says so" sf_check_missing_word_list
   h_check prepush-log-private "pre-push logs are private, inside the clone, and pruned" sf_check_prepush_log
 }

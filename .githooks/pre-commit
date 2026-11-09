@@ -19,6 +19,11 @@
 # Bypass:  git commit --no-verify   (think first)
 
 set -uo pipefail
+# Bytes, not characters: in a UTF-8 locale grep skips, and awk aborts on, a line
+# holding invalid UTF-8, so one stray Latin-1 byte would hide a leak beside it.
+export LC_ALL=C
+# Scan the objects a push really sends: pack-objects ignores replace refs.
+export GIT_NO_REPLACE_OBJECTS=1
 
 MODE="${1:-staged}"
 case "$MODE" in
@@ -28,11 +33,6 @@ esac
 REMOTE="${2:-}"   # --push only: the remote's name, or its URL for an unnamed push
 root=$(git rev-parse --show-toplevel) || exit 0
 cd "$root" || exit 0
-
-# This scanner and doctor's wrapper necessarily contain every pattern they look
-# for. Excluding them is not a loophole: neither is ever a place a real secret
-# would land, and both are reviewed as code.
-SELF_EXCLUDE='^(\.githooks/pre-commit|lib/doctor\.sh)$'
 
 # .scrub-words is untracked, so a linked worktree has no copy of its own. Fall
 # back to the main working tree's list rather than silently scanning without it.
@@ -59,11 +59,13 @@ report() {
 # Every pattern, one per line: grep flags, a tab, the pattern, a tab, what a
 # hit means.
 patterns() {
-  local pat w
+  local pat w n=0
   # Absolute home paths leak a username, and break on every other machine.
-  printf '%s\t%s\t%s\n' -E '/(Users|home)/[a-zA-Z0-9._-]+' 'contains an absolute home path'
+  # macOS file systems ignore case, so /users/ names the same directory.
+  printf '%s\t%s\t%s\n' -E '/([Uu][Ss][Ee][Rr][Ss]|home)/[a-zA-Z0-9._-]+' 'contains an absolute home path'
   # Credential shapes are length-anchored on purpose: a bare prefix would match
-  # documentation and the tooling that looks for it.
+  # documentation and the tooling that looks for it. The key header is not
+  # anchored to the start of a line: keys sit inside JSON values and YAML blocks.
   for pat in 'ghp_[A-Za-z0-9]{20,}' \
              'gho_[A-Za-z0-9]{20,}' \
              'github_pat_[A-Za-z0-9_]{20,}' \
@@ -71,34 +73,45 @@ patterns() {
              '\bASIA[0-9A-Z]{16}\b' \
              'xoxb-[0-9A-Za-z-]{10,}' \
              'sk-ant-[A-Za-z0-9_-]{20,}' \
-             '^-+BEGIN [A-Z ]*PRIVATE KEY-+'; do
+             '-+BEGIN [A-Z ]*PRIVATE KEY-+'; do
     printf '%s\t%s\t%s\n' -E "$pat" 'matches a credential pattern'
   done
   # Private words: .scrub-words is untracked and personal (employer name, GitHub
   # org, account handles, internal service names). One per line, '#' comments
-  # allowed.
+  # allowed. CRLF endings, surrounding blanks and a missing final newline are
+  # all fine. Matching ignores case for ASCII letters only. A hit names the
+  # word's line in the list, not the word.
   if [ -f "$scrub" ]; then
-    while IFS= read -r w; do
+    while IFS= read -r w || [ -n "$w" ]; do
+      n=$((n + 1))
+      w="${w%$'\r'}"
+      w="${w#"${w%%[![:space:]]*}"}"
+      w="${w%"${w##*[![:space:]]}"}"
       [ -n "$w" ] || continue
       case "$w" in \#*) continue ;; esac
-      printf '%s\t%s\t%s\n' -iF "$w" "contains the private word '$w'"
+      printf '%s\t%s\t%s\n' -iF "$w" "contains the private word on line $n of .scrub-words"
     done < "$scrub"
   fi
 }
 PATTERNS=$(patterns)
 
-hits() {   # hits <grep flags> <pattern> [file]: line numbers of matches, comma-separated
-  local flag="$1" pat="$2"
+hits() {   # hits <grep flags> <pattern> [file]: line numbers of matches, comma-separated; 1 if none
+  local flag="$1" pat="$2" nums
   shift 2
-  grep -n $flag -- "$pat" "$@" 2>/dev/null | cut -d: -f1 | paste -sd, -
+  # -a reads binary content as text. Without it GNU grep only says "binary file
+  # matches", on stderr, and no line number comes back.
+  nums=$(grep -a -n $flag -- "$pat" "$@" 2>/dev/null | cut -d: -f1 | paste -sd, -)
+  [ -n "$nums" ] && printf '%s\n' "$nums"
 }
 
-scan_text() {   # scan_text <label> <text>: every pattern over text held in memory
-  local label="$1" text="$2" flag pat desc lines
+scan_text() {   # scan_text <label> <text> [names]: every pattern over text held in memory
+  local label="$1" text="$2" names="${3:-}" flag pat desc lines
   [ -n "$text" ] || return 0
   while IFS=$'\t' read -r flag pat desc; do
-    lines=$(printf '%s\n' "$text" | hits "$flag" "$pat")
-    if [ -n "$lines" ]; then report "$label $desc" "line(s) $lines"; fi
+    # Repo-relative file names are not machine paths: tests/fixtures/home/ is fine.
+    [ -n "$names" ] && [ "$desc" = 'contains an absolute home path' ] && continue
+    lines=$(printf '%s\n' "$text" | hits "$flag" "$pat") || continue
+    report "$label $desc" "line(s) $lines"
   done <<< "$PATTERNS"
 }
 
@@ -128,10 +141,10 @@ push_commits() {   # git's pre-push lines on stdin -> each commit the push would
 }
 
 # The patch a commit adds against its first parent, or against nothing for a
-# root commit. Fixed prefixes, no external diff or textconv, whatever the
-# caller's git config says.
+# root commit. Every file as text, whatever attributes or size say; fixed
+# prefixes; no external diff or textconv, whatever the caller's config says.
 commit_patch() {
-  local opts="--no-color --no-ext-diff --no-textconv --unified=0 --src-prefix=a/ --dst-prefix=b/"
+  local opts="--text --no-color --no-ext-diff --no-textconv --unified=0 --src-prefix=a/ --dst-prefix=b/"
   if git rev-parse -q --verify "$1^1" >/dev/null 2>&1; then
     # shellcheck disable=SC2086
     git diff $opts "$1^1" "$1"
@@ -150,27 +163,30 @@ commit_names() {   # commit_names <sha>: the paths a commit adds, changes or ren
 }
 
 added_lines() {   # added_lines <sha>: "path TAB line TAB text" for each line a commit adds
-  commit_patch "$1" | SKIP="$SELF_EXCLUDE" awk '
+  # NUL bytes become spaces so the text survives the shell. git ends a name that
+  # holds a space with a TAB on its +++ line; that TAB is not part of the name.
+  commit_patch "$1" | tr '\000' ' ' | awk '
     /^diff --git /     { head = 1; next }
-    head && /^\+\+\+ / { path = substr($0, 5); sub(/^b\//, "", path)
-                         skip = (path ~ ENVIRON["SKIP"]); next }
+    head && /^\+\+\+ / { path = substr($0, 5); sub(/\t$/, "", path); sub(/^b\//, "", path); next }
     /^@@ /             { head = 0; split($3, a, ","); n = substr(a[1], 2) + 0; next }
-    !head && /^\+/     { if (!skip) printf "%s\t%d\t%s\n", path, n, substr($0, 2); n++ }
-  '
+    !head && /^\+/     { printf "%s\t%d\t%s\n", path, n, substr($0, 2); n++ }
+  ' 2>/dev/null
 }
 
 scan_commit() {   # scan_commit <sha>: one commit's message, file names and added lines
   local c="$1" short rows content where flag pat desc idx at
   short=$(git rev-parse --short "$c")
   scan_text "commit $short: its message" "$(git log -1 --format=%B "$c")"
-  scan_text "commit $short: a file name" "$(commit_names "$c")"
-  rows=$(added_lines "$c")
+  scan_text "commit $short: a file name" "$(commit_names "$c")" names
+  if ! rows=$(added_lines "$c"); then
+    report "commit $short: its patch could not be read" "nothing in it was scanned"
+    return
+  fi
   [ -n "$rows" ] || return 0
   content=$(printf '%s\n' "$rows" | cut -f3-)
   where=$(printf '%s\n' "$rows" | cut -f1,2 | tr '\t' ':')
   while IFS=$'\t' read -r flag pat desc; do
-    idx=$(printf '%s\n' "$content" | hits "$flag" "$pat")
-    [ -n "$idx" ] || continue
+    idx=$(printf '%s\n' "$content" | hits "$flag" "$pat") || continue
     at=$(printf '%s\n' "$idx" | tr ',' '\n' | while IFS= read -r i; do
            printf '%s\n' "$where" | sed -n "${i}p"
          done | paste -sd, -)
@@ -198,18 +214,17 @@ fi
 # --- staged or tracked files ---------------------------------------------
 
 if [ "$MODE" = "--all" ]; then
-  files=$(git ls-files)
+  files=$(git -c core.quotePath=false ls-files)
 else
-  files=$(git diff --cached --name-only --diff-filter=ACM)
+  files=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM)
 fi
-files=$(printf '%s\n' "$files" | grep -Ev "$SELF_EXCLUDE" || true)
 [ -z "$files" ] && exit 0
 
 while IFS=$'\t' read -r flag pat desc; do
   while IFS= read -r f; do
     [ -f "$f" ] || continue
-    lines=$(hits "$flag" "$pat" "$f")
-    if [ -n "$lines" ]; then report "$f $desc" "line(s) $lines"; fi
+    lines=$(hits "$flag" "$pat" "$f") || continue
+    report "$f $desc" "line(s) $lines"
   done <<< "$files"
 done <<< "$PATTERNS"
 if [ ! -f "$scrub" ] && [ "$MODE" != "--all" ]; then
@@ -219,11 +234,13 @@ fi
 # --- shell syntax ---------------------------------------------------------
 # Hooks deploy from this tree. A syntax error makes bash exit 2, and a
 # PreToolUse hook that exits 2 blocks every Bash call in every open session.
+# Line numbers only: bash quotes the offending source line in its message.
 while IFS= read -r f; do
   [ -f "$f" ] || continue
   case "$f" in *.sh|.githooks/*) ;; *) continue ;; esac
   if ! out=$(bash -n "$f" 2>&1); then
-    report "$f has a shell syntax error" "$out"
+    report "$f has a shell syntax error" \
+      "line(s) $(printf '%s\n' "$out" | sed -n 's/.*: line \([0-9][0-9]*\):.*/\1/p' | sort -un | paste -sd, -)"
   fi
 done <<< "$files"
 
