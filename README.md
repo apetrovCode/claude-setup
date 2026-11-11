@@ -82,7 +82,11 @@ Two layers of protection:
 - `.gitignore` is an **allowlist** — deny everything, then re-admit known paths. Unknown files
   fail closed.
 - `.githooks/pre-commit` scans staged content for home paths, credential shapes, and any word in
-  an untracked personal `.scrub-words` file. Enable it with `git config core.hooksPath .githooks`.
+  an untracked personal `.scrub-words` file. Enable it, with an absolute path, from the clone's root:
+  `git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"`. A relative `.githooks`
+  is resolved against the work tree git infers, so a commit or push run with only `--git-dir` (or
+  `GIT_DIR`) from another directory finds no hooks and skips the scan. The `hooks-path-absolute`
+  check fails on a relative value.
 
 ## Pushing from a machine with two GitHub accounts
 

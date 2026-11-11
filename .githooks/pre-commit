@@ -17,7 +17,8 @@
 # Hits are reported by file and line, never by the matched text: the report
 # lands in terminals, hook logs and agent transcripts.
 #
-# Enable:  git config core.hooksPath .githooks
+# Enable:  git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"
+#          (absolute: a relative path is lost when git runs with only --git-dir)
 # Bypass:  git commit --no-verify   (think first)
 
 set -uo pipefail
@@ -33,6 +34,7 @@ case "$MODE" in
   *) printf 'pre-commit: unknown mode %s\n' "$MODE" >&2; exit 2 ;;
 esac
 REMOTE="${2:-}"   # --push only: the remote's name, or its URL for an unnamed push
+URL="${3:-}"      # --push only: the URL being pushed to (pre-push's second argument)
 # Fail closed: outside a work tree there is nothing to scan, and "clean" would
 # be a false pass.
 root=$(git rev-parse --show-toplevel 2>/dev/null) || {
@@ -144,11 +146,21 @@ peel() {   # peel <label> <sha>: scan each tag object on the way down; set PEELE
 }
 
 push_commits() {   # push_commits <git's pre-push lines>: set COMMITS to each commit the push would publish
-  local lref lsha rref rsha rtip known="" list i=0
-  # Commits already on the remote being pushed to are public; commits only
-  # another remote has are not. A push to a bare URL scans all it sends.
-  if [ -n "$REMOTE" ] && git remote | grep -qxF -- "$REMOTE"; then
-    known="--remotes=$REMOTE"
+  local lref lsha rref rsha rtip url adv known="" list i=0
+  # Commits already on the push target are public; nothing else is. Ask the
+  # target itself: local refs/remotes/<name>/* describe the last fetch and go
+  # stale after a set-url or pushurl change. If the target cannot be asked,
+  # scan everything each pushed ref reaches.
+  url="$URL"
+  if [ -z "$url" ] && [ -n "$REMOTE" ]; then
+    url=$(git remote get-url --push "$REMOTE" 2>/dev/null) || url="$REMOTE"
+  fi
+  if [ -n "$url" ] && adv=$(git ls-remote "$url" 2>/dev/null); then
+    known=$(printf '%s\n' "$adv" | cut -f1 | awk 'NF && !seen[$0]++' | while IFS= read -r s; do
+              git cat-file -e "$s^{commit}" 2>/dev/null && printf '%s\n' "$s"
+            done)
+  else
+    printf '  push scan: could not list the refs on the push target; scanning full history\n' >&2
   fi
   COMMITS=""
   while read -r lref lsha rref rsha; do
@@ -167,7 +179,9 @@ $rref" names
     if [ -n "$rtip" ]; then
       list=$(git rev-list "$rtip..$PEELED")
     elif [ -n "$known" ]; then
-      list=$(git rev-list "$PEELED" --not "$known")   # a new ref, or a remote tip this clone lacks
+      # a new ref, or a remote tip this clone lacks
+      # shellcheck disable=SC2086
+      list=$(git rev-list "$PEELED" --not $known)
     else
       list=$(git rev-list "$PEELED")
     fi || { report "pushed ref #$i: git rev-list failed" "nothing it publishes was scanned"; continue; }
@@ -251,19 +265,23 @@ fi
 
 # --- staged or tracked files ---------------------------------------------
 
+# NUL-separated: without -z git C-quotes a name holding a double quote,
+# backslash, tab or newline (core.quotePath=false only covers non-ASCII), and
+# the quoted form is not a file on disk, so it would be skipped unscanned.
+files=()
 if [ "$MODE" = "--all" ]; then
-  files=$(git -c core.quotePath=false ls-files)
+  while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z)
 else
-  files=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM)
+  while IFS= read -r -d '' f; do files+=("$f"); done < <(git diff --cached --name-only -z --diff-filter=ACM)
 fi
-[ -z "$files" ] && exit 0
+[ "${#files[@]}" -eq 0 ] && exit 0
 
 while IFS=$'\t' read -r flag pat desc; do
-  while IFS= read -r f; do
+  for f in "${files[@]}"; do
     [ -f "$f" ] || continue
     lines=$(hits "$flag" "$pat" "$f") || continue
     report "$f $desc" "line(s) $lines"
-  done <<< "$files"
+  done
 done <<< "$PATTERNS"
 if [ ! -f "$scrub" ] && [ "$MODE" != "--all" ]; then
   printf '  note: no .scrub-words — private-word scanning is off\n' >&2
@@ -273,14 +291,14 @@ fi
 # Hooks deploy from this tree. A syntax error makes bash exit 2, and a
 # PreToolUse hook that exits 2 blocks every Bash call in every open session.
 # Line numbers only: bash quotes the offending source line in its message.
-while IFS= read -r f; do
+for f in "${files[@]}"; do
   [ -f "$f" ] || continue
   case "$f" in *.sh|.githooks/*) ;; *) continue ;; esac
   if ! out=$(bash -n "$f" 2>&1); then
     report "$f has a shell syntax error" \
       "line(s) $(printf '%s\n' "$out" | sed -n 's/.*: line \([0-9][0-9]*\):.*/\1/p' | sort -un | paste -sd, -)"
   fi
-done <<< "$files"
+done
 
 if [ "$fail" -ne 0 ]; then
   if [ "$MODE" != "--all" ]; then

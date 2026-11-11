@@ -65,10 +65,26 @@ st_check_deny_not_cwd_relative() {
   [ -z "$hits" ] || { printf 'cwd-relative deny rules (use //** or ~/):\n%s\n' "$hits"; return 1; }
 }
 
+# A Read rule that covers the whole home directory (or more). Case table:
+# tests/fixtures/home-wide-read.tsv, checked by home-wide-read-patterns.
+ST_HOME_WIDE_RE='^Read$|^Read\((\*\*|//\*\*|~/\*\*)(/\*+)*\)$|^Read\(~\)$|^Read\(//([Uu]sers|[Hh]ome)(/[^/]+)?(/\*\*(/\*+)*)?\)$'
+
 st_check_no_home_wide_read() {
   local hits
-  hits="$(st_rules allow | grep -E '^Read$|^Read\((\*\*|//\*\*|~/\*\*|//(Users|home)/[^/]+/\*\*)\)$' || true)"
+  hits="$(st_rules allow | grep -E "$ST_HOME_WIDE_RE" || true)"
   [ -z "$hits" ] || { printf 'home-wide Read allow:\n%s\n' "$hits"; return 1; }
+}
+
+st_check_home_wide_read_patterns() {
+  local want rule got bad=""
+  while IFS=$'\t' read -r want rule; do
+    [ -n "$want" ] || continue
+    rule="$(printf '%s' "$rule" | sed 's/@U@/Users/; s/@H@/home/; s/@u@/users/')"
+    if printf '%s\n' "$rule" | grep -qE "$ST_HOME_WIDE_RE"; then got=flag; else got=pass; fi
+    [ "$got" = "$want" ] || bad="$bad
+  want $want, got $got: $rule"
+  done < "$REPO/tests/fixtures/home-wide-read.tsv"
+  [ -z "$bad" ] || { printf '%s\n' "$bad"; return 1; }
 }
 
 st_check_gh_api_mutations_ask() {
@@ -136,6 +152,18 @@ st_check_no_cred_output_cases() {
   want $want, got $got: $cmd"
   done < "$REPO/tests/fixtures/no-cred-output.tsv"
   [ -z "$bad" ] || { printf '%s\n' "$bad"; return 1; }
+}
+
+# A relative core.hooksPath is resolved against the work tree git infers, so a
+# commit or push run with only --git-dir (or GIT_DIR) from another directory
+# finds no hooks and skips the leak scan silently. Checked 2026-11-11.
+st_check_hooks_path_absolute() {
+  local hp
+  hp="$(git -C "$REPO" config --get core.hooksPath 2>/dev/null)" || return 0   # unset: CI, fresh clone
+  case "$hp" in
+    /*) [ "$hp" = "$REPO/.githooks" ] || { printf 'core.hooksPath points elsewhere: not %s\n' "this clone's .githooks"; return 1; } ;;
+    *)  printf 'core.hooksPath is relative (%s): run  git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"\n' "$hp"; return 1 ;;
+  esac
 }
 
 st_check_hook_scripts_registered() {
@@ -254,10 +282,12 @@ st_rule_checks() {   # checks on the built default settings
   h_check deny-baseline "credential stores stay Read-denied" st_check_deny_baseline
   h_check deny-not-cwd-relative "no deny rule depends on the working directory" st_check_deny_not_cwd_relative
   h_check no-home-wide-read-allow "no allow rule reads the whole home directory" st_check_no_home_wide_read
+  h_check home-wide-read-patterns "the home-wide Read pattern flags every broad form" st_check_home_wide_read_patterns
   h_check gh-api-mutations-ask "mutating gh api forms need approval" st_check_gh_api_mutations_ask
   h_check gh-api-reads-allowed "read-only gh api forms stay allowed" st_check_gh_api_reads_allowed
   h_check hook-scripts-parse "every registered hook script exists and parses" st_check_hook_scripts_parse
   h_check hook-scripts-registered "every hook script is registered" st_check_hook_scripts_registered
+  h_check hooks-path-absolute "this clone's core.hooksPath is absolute, so --git-dir runs still scan" st_check_hooks_path_absolute
   h_check no-cred-output-cases "no-cred-output.sh blocks credential-printing commands only" st_check_no_cred_output_cases
   if command -v claude >/dev/null 2>&1; then
     h_check settings-min-versions "no settings key needs a newer CLI than the one on PATH" st_check_min_versions
