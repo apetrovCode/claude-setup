@@ -1,0 +1,19 @@
+block	aws sts get-session-token --profile p
+block	aws configure export-credentials --profile p
+allow	aws sts get-caller-identity --profile p
+block	gh auth token
+block	gh auth token -h github.com -u someuser
+block	gh auth token | head -c 4
+block	echo "$(gh auth token)"
+block	gh auth status --show-token
+block	gh auth status -t
+allow	GH_TOKEN="$(gh auth token -h github.com -u someuser)" git push origin main
+allow	export GH_TOKEN=$(gh auth token)
+allow	GH_TOKEN="$(gh auth token -h github.com -u someuser)" gh pr merge 4 --merge
+allow	gh auth status
+allow	gh api user --jq .login
+block	cd repo && gh auth token
+block	x=1; gh auth status --show-token
+block	echo `gh auth token`
+allow	grep -rn "gh auth token" claude/hooks
+allow	git commit -m "block printing gh auth token"
