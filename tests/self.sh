@@ -165,6 +165,12 @@ sf_check_scanner_content() {
   sf_all_repo "$d/syntax" '' && sf_add "$d/syntax" bad.sh 'if then %s\n' "$tok" || return 1
   sf_all "$d/syntax"
   sf_has "$SF_OUT" "$tok" && bad="$bad; the syntax report repeats a token"
+  # git C-quotes names holding a double quote, backslash, tab or newline, even
+  # with core.quotePath=false; the quoted form is not a file on disk.
+  sf_all_repo "$d/quote" '' && sf_add "$d/quote" 'q"uo	te.txt' 'k=%s\n' "$tok" || return 1
+  sf_all "$d/quote" && bad="$bad; a token in a file whose name git C-quotes (--all)"
+  (cd "$d/quote" && bash "$REPO/.githooks/pre-commit" >/dev/null 2>&1) \
+    && bad="$bad; a token in a file whose name git C-quotes (staged)"
   [ -z "$bad" ] || { printf 'file scan got wrong:%s\n' "${bad#;}"; return 1; }
 }
 
@@ -244,6 +250,13 @@ sf_check_push_scan() {
   sf_git -C "$r" update-ref refs/remotes/other/main "$c2" || return 1
   out="$(sf_scan_push "$r" "refs/heads/topic2 $c2 refs/heads/topic2 $zero" origin)"; rc=$?
   [ "$rc" -ne 0 ] || bad="$bad; commits another remote already has, pushed to this one"
+  # Local tracking refs go stale: after a pushurl change they describe the old
+  # target. What the push target really has is asked of the target itself.
+  sf_git init -q --bare "$d/fresh.git" && sf_git -C "$r" remote set-url --push origin "$d/fresh.git" \
+    && sf_git -C "$r" update-ref refs/remotes/origin/main "$c2" || return 1
+  out="$(sf_scan_push "$r" "refs/heads/main $c2 refs/heads/main $zero" origin)"; rc=$?
+  [ "$rc" -ne 0 ] || bad="$bad; a push to a new pushurl, trusting stale tracking refs"
+  sf_git -C "$r" remote set-url --delete --push origin "$d/fresh.git" || return 1
   [ -z "$bad" ] || { printf 'push scan got wrong:%s\n' "${bad#;}"; return 1; }
 }
 
