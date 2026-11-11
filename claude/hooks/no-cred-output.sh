@@ -35,11 +35,15 @@ fi
 
 # Drop the one allowed form, VAR=$(gh auth token ...) with optional quotes, then
 # block whatever gh token output is left.
-rest=$(printf '%s' "$cmd" | sed -E 's/[A-Za-z_][A-Za-z0-9_]*="?\$\([[:space:]]*gh[[:space:]]+auth[[:space:]]+token[^()]*\)"?//g')
-# Only where gh is in command position (line start, after ; & | ( or a backtick),
-# so text that merely mentions it, in a grep pattern or commit message, passes.
+# Arguments inside the allowed form are limited to flags, hosts and account names:
+# no ; | & > < or nested substitutions can hide in it.
+rest=$(printf '%s' "$cmd" | sed -E 's/[A-Za-z_][A-Za-z0-9_]*="?\$\([[:space:]]*gh[[:space:]]+auth[[:space:]]+token[-A-Za-z0-9._@[:space:]]*\)"?//g')
+# Only where gh is in command position (line start, after ; & | ( ` { !, or after
+# then/do/else/command/env/exec/time/xargs/sudo; a path prefix like /opt/x/bin/gh
+# counts), so text that merely mentions it, in a grep pattern or commit message,
+# passes. Status: --show-token, or any short-flag group containing t.
 if printf '%s' "$rest" | grep -Eq \
-  '(^|[;&|(`])[[:space:]]*gh[[:space:]]+auth[[:space:]]+(token|status([^;&|]*[[:space:]])(--show-token|-t)([[:space:]]|$))'
+  '(^|[;&|(`{!]|(^|[[:space:]])(then|do|else|command|env|exec|time|xargs|sudo))[[:space:]]*\\?([^[:space:]"'"'"']*/)?gh[[:space:]]+auth[[:space:]]+(token|status([^;&|]*[[:space:]])(--show-token|-[A-Za-z]*t[A-Za-z]*)([[:space:]=]|$))'
 then
   cat >&2 <<'MSG'
 BLOCKED: this command prints a GitHub token, and tool output is checkpointed
