@@ -63,7 +63,7 @@
       "Read(~/.ssh/**)",
       "Read(~/.gnupg/**)",
       "Read(~/.git-credentials)",
-      "Read(**/accessKeys*.csv)",
+      "Read(//**/accessKeys*.csv)",
       "Edit(~/.zshrc)",
       "Edit(~/.bashrc)"
     ],
