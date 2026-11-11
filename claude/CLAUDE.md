@@ -36,7 +36,8 @@ SessionStart, Stop, SessionEnd and PreCompact hooks. Reading it is not automatic
   `mempalace mine .` (idempotent; re-files changed files).
 - **Never file secrets.** Anything holding credentials, tokens, or secret-store values stays out
   of the palace — it resurfaces in every future session's search and wake-up context.
-- **Subagents have no `mempalace_*` MCP tools.** Use the `mempalace` CLI inside a subagent.
+- **Subagents can use the `mempalace_*` MCP tools** after loading them with ToolSearch (re-tested
+  2026-11-11). The `mempalace` CLI is the fallback when the MCP server is not connected.
 
 ## Working style
 
