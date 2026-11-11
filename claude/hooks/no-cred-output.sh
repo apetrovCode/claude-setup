@@ -37,7 +37,10 @@ fi
 # block whatever gh token output is left.
 # Arguments inside the allowed form are limited to flags, hosts and account names:
 # no ; | & > < or nested substitutions can hide in it.
-rest=$(printf '%s' "$cmd" | sed -E 's/[A-Za-z_][A-Za-z0-9_]*="?\$\([[:space:]]*gh[[:space:]]+auth[[:space:]]+token[-A-Za-z0-9._@[:space:]]*\)"?//g')
+# The form is only exempt as an assignment at the start of a command (line start,
+# after ; & | ( or then/do, optionally after export), so `echo X="$(gh auth token)"`
+# still counts as printing.
+rest=$(printf '%s' "$cmd" | sed -E 's/(^|[;&|(]|(^|[[:space:]])(then|do))([[:space:]]*)(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*="?\$\([[:space:]]*gh[[:space:]]+auth[[:space:]]+token[-A-Za-z0-9._@[:space:]]*\)"?/\1\4/g')
 # Only where gh is in command position (line start, after ; & | ( ` { !, or after
 # then/do/else/command/env/exec/time/xargs/sudo; a path prefix like /opt/x/bin/gh
 # counts), so text that merely mentions it, in a grep pattern or commit message,

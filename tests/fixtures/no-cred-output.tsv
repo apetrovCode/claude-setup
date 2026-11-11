@@ -28,3 +28,7 @@ allow	gh auth status -h github.com
 allow	grep -rn "gh auth token" claude/hooks
 allow	git commit -m "block printing gh auth token"
 allow	gh auth status --hostname github.com
+block	echo GH_TOKEN="$(gh auth token)"
+block	printf '%s\n' A=$(gh auth token -u a)
+allow	cd repo && GH_TOKEN="$(gh auth token -u a)" git push
+allow	if true; then GH_TOKEN=$(gh auth token) gh pr list; fi
