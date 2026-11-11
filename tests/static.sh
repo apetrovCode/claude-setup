@@ -124,6 +124,20 @@ EOF
   [ -z "$bad" ] || { printf '%s\n' "$bad"; return 1; }
 }
 
+# no-cred-output.sh against its case table: block = exit 2, allow = exit 0.
+st_check_no_cred_output_cases() {
+  local want cmd rc got bad=""
+  while IFS=$'\t' read -r want cmd; do
+    [ -n "$want" ] || continue
+    jq -n --arg c "$cmd" '{tool_input: {command: $c}}' | bash "$REPO/claude/hooks/no-cred-output.sh" >/dev/null 2>&1
+    rc=$?
+    case "$rc" in 2) got=block ;; 0) got=allow ;; *) got="exit $rc" ;; esac
+    [ "$got" = "$want" ] || bad="$bad
+  want $want, got $got: $cmd"
+  done < "$REPO/tests/fixtures/no-cred-output.tsv"
+  [ -z "$bad" ] || { printf '%s\n' "$bad"; return 1; }
+}
+
 st_check_hook_scripts_registered() {
   local f bad=""
   for f in "$REPO"/claude/hooks/*.sh; do
@@ -244,6 +258,7 @@ st_rule_checks() {   # checks on the built default settings
   h_check gh-api-reads-allowed "read-only gh api forms stay allowed" st_check_gh_api_reads_allowed
   h_check hook-scripts-parse "every registered hook script exists and parses" st_check_hook_scripts_parse
   h_check hook-scripts-registered "every hook script is registered" st_check_hook_scripts_registered
+  h_check no-cred-output-cases "no-cred-output.sh blocks credential-printing commands only" st_check_no_cred_output_cases
   if command -v claude >/dev/null 2>&1; then
     h_check settings-min-versions "no settings key needs a newer CLI than the one on PATH" st_check_min_versions
   else

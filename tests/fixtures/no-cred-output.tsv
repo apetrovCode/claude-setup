@@ -1,0 +1,34 @@
+block	aws sts get-session-token --profile p
+block	aws configure export-credentials --profile p
+allow	aws sts get-caller-identity --profile p
+block	gh auth token
+block	gh auth token -h github.com -u someuser
+block	gh auth token | head -c 4
+block	echo "$(gh auth token)"
+block	gh auth status --show-token
+block	gh auth status -t
+allow	GH_TOKEN="$(gh auth token -h github.com -u someuser)" git push origin main
+allow	export GH_TOKEN=$(gh auth token)
+allow	GH_TOKEN="$(gh auth token -h github.com -u someuser)" gh pr merge 4 --merge
+allow	gh auth status
+allow	gh api user --jq .login
+block	cd repo && gh auth token
+block	x=1; gh auth status --show-token
+block	echo `gh auth token`
+block	X="$(gh auth token; cat hosts.yml)" true
+block	X="$(gh auth token -u a > out.txt)" true
+block	/opt/homebrew/bin/gh auth token
+block	env gh auth token
+block	command gh auth token
+block	if true; then gh auth token; fi
+block	{ gh auth token; }
+block	\gh auth token
+block	gh auth status -ht github.com
+allow	gh auth status -h github.com
+allow	grep -rn "gh auth token" claude/hooks
+allow	git commit -m "block printing gh auth token"
+allow	gh auth status --hostname github.com
+block	echo GH_TOKEN="$(gh auth token)"
+block	printf '%s\n' A=$(gh auth token -u a)
+allow	cd repo && GH_TOKEN="$(gh auth token -u a)" git push
+allow	if true; then GH_TOKEN=$(gh auth token) gh pr list; fi
