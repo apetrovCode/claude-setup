@@ -50,10 +50,19 @@ st_check_deny_baseline() {
   for want in 'Read(~/.aws/**)' 'Read(~/.ssh/**)' 'Read(~/.gnupg/**)' \
               'Read(~/.config/gh/**)' 'Read(~/.git-credentials)' \
               'Read(~/.docker/config.json)' 'Read(~/.npmrc)' 'Read(~/.kube/**)' \
-              'Read(**/accessKeys*.csv)'; do
+              'Read(//**/accessKeys*.csv)'; do
     st_rules deny | grep -qxF "$want" || missing="$missing $want"
   done
   [ -z "$missing" ] || { printf 'missing deny rules:%s\n' "$missing"; return 1; }
+}
+
+# A path rule that starts with **/ (or any relative path) is matched against the session's working
+# directory, so it only protects sessions started above the file. Smoke run c6bccef5 (2026-11-11):
+# Read(**/internal_users.txt) let a read through from a temp cwd; Read(//**/...) denied it.
+st_check_deny_not_cwd_relative() {
+  local hits
+  hits="$(st_rules deny | grep -E '^(Read|Edit|Write)\((\*\*/|\./|[^/~*])' || true)"
+  [ -z "$hits" ] || { printf 'cwd-relative deny rules (use //** or ~/):\n%s\n' "$hits"; return 1; }
 }
 
 st_check_no_home_wide_read() {
@@ -229,6 +238,7 @@ static_suite() {
 
 st_rule_checks() {   # checks on the built default settings
   h_check deny-baseline "credential stores stay Read-denied" st_check_deny_baseline
+  h_check deny-not-cwd-relative "no deny rule depends on the working directory" st_check_deny_not_cwd_relative
   h_check no-home-wide-read-allow "no allow rule reads the whole home directory" st_check_no_home_wide_read
   h_check gh-api-mutations-ask "mutating gh api forms need approval" st_check_gh_api_mutations_ask
   h_check gh-api-reads-allowed "read-only gh api forms stay allowed" st_check_gh_api_reads_allowed
