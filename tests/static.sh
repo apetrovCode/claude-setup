@@ -292,7 +292,6 @@ static_suite() {
     h_skip rules "rule checks" "the default profile did not build"
   fi
   # These need no built settings, so they run either way.
-  h_skip hook-matcher-coverage "hook matchers cover their case tables" "hook case tables not built yet"
   h_check gitignore-readmits "test, tool and CI files are not ignored" st_check_gitignore
   if [ "${QUICK:-0}" -eq 1 ]; then
     h_skip shellcheck "shellcheck" "--quick"

@@ -37,22 +37,23 @@ else
   out+="actionlint not installed — workflow NOT syntax-linted."$'\n'
 fi
 
+# A missing zizmor skips only zizmor: an actionlint failure above still blocks.
+# (Before 2026-11-12 this exited 0 here and dropped it; case actionlint-fails-zizmor-absent.)
 if ! have zizmor; then
-  printf '%szizmor not installed — workflow NOT security-linted.\n' "$out" >&2
-  exit 0
-fi
-
-# --min-confidence medium is load-bearing: the `artipacked` audit flags every
-# actions/checkout without `persist-credentials: false` at medium severity but
-# LOW confidence, which would block essentially every workflow. Filtering by
-# confidence keeps real medium findings and drops that noise.
-o=$(zizmor --offline --min-severity medium --min-confidence medium --format plain --no-progress "$f" 2>&1)
-rc=$?
-if [ "$rc" -ge 11 ]; then
-  fail=1
-  out+="zizmor (severity exit $rc):"$'\n'"$o"$'\n'
-elif [ "$rc" -eq 1 ] || [ "$rc" -eq 2 ]; then
-  out+="zizmor could not run (exit $rc) — workflow NOT security-linted:"$'\n'"$o"$'\n'
+  out+="zizmor not installed — workflow NOT security-linted."$'\n'
+else
+  # --min-confidence medium is load-bearing: the `artipacked` audit flags every
+  # actions/checkout without `persist-credentials: false` at medium severity but
+  # LOW confidence, which would block essentially every workflow. Filtering by
+  # confidence keeps real medium findings and drops that noise.
+  o=$(zizmor --offline --min-severity medium --min-confidence medium --format plain --no-progress "$f" 2>&1)
+  rc=$?
+  if [ "$rc" -ge 11 ]; then
+    fail=1
+    out+="zizmor (severity exit $rc):"$'\n'"$o"$'\n'
+  elif [ "$rc" -eq 1 ] || [ "$rc" -eq 2 ]; then
+    out+="zizmor could not run (exit $rc) — workflow NOT security-linted:"$'\n'"$o"$'\n'
+  fi
 fi
 
 if [ "$fail" -eq 1 ]; then

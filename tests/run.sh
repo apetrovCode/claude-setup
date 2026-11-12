@@ -6,7 +6,8 @@
 # Suites: static   public checks on settings built from the repo alone (CI-safe)
 #         self     the harness testing its own gates (CI-safe)
 #         private  ~/.claude/local/harness/checks.sh, when present
-#         hooks, dcg, scanner  not built yet
+#         hooks    each public hook against its case table (CI-safe)
+#         dcg, scanner  not built yet
 # --public-only  skip the private suite and private expected-fail list (CI)
 # --quick        skip the slow checks (shellcheck)
 # --live         reserved for suites that need the real HOME and installed binaries
@@ -71,7 +72,10 @@ for s in $SUITES; do
         h_skip private "private checks" "no private harness layer on this machine"
       fi
       ;;
-    hooks)   h_suite hooks;   h_skip hooks "hook case tables" "not built yet" ;;
+    hooks)
+      h_suite "hooks (public)"
+      h_run_suite suite-hooks "$REPO/tests/hooks.sh" hooks_suite
+      ;;
     dcg)     h_suite dcg;     h_skip dcg "dcg corpus" "not built yet" ;;
     scanner) h_suite scanner; h_skip scanner "scanner self-test" "not built yet" ;;
     *)       printf 'unknown suite: %s\n' "$s" >&2; exit 2 ;;
