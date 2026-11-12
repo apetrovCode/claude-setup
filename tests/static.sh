@@ -223,6 +223,21 @@ print("; ".join(bad)); sys.exit(1 if bad else 0)
 PY2
 }
 
+# Rules for AI agents contributing here: AGENTS.md, loaded by Claude Code through the
+# root CLAUDE.md. The check keeps the load-bearing rules from drifting out.
+st_check_agents_md() {
+  local f="$REPO/AGENTS.md" want missing=""
+  [ -f "$f" ] || { printf 'no AGENTS.md\n'; return 1; }
+  grep -qxF '@AGENTS.md' "$REPO/CLAUDE.md" 2>/dev/null || missing="$missing; CLAUDE.md does not import @AGENTS.md"
+  # shellcheck disable=SC2088  # literal text to find, not a path
+  for want in './install.sh test' 'public' '~/.claude/local' 'employer' '.scrub-words' 'core.hooksPath' \
+              'expected-fail.txt' '--no-verify' 'CLAUDE_SETUP_SKIP_CHECKS' 'pull request'; do
+    grep -qiF -- "$want" "$f" || missing="$missing; AGENTS.md does not mention $want"
+  done
+  (cd "$REPO" && git check-ignore -q --no-index AGENTS.md CLAUDE.md) && missing="$missing; .gitignore ignores AGENTS.md or CLAUDE.md"
+  [ -z "$missing" ] || { printf '%s\n' "${missing#; }"; return 1; }
+}
+
 st_check_hook_scripts_registered() {
   local f bad=""
   for f in "$REPO"/claude/hooks/*.sh; do
@@ -348,6 +363,7 @@ st_rule_checks() {   # checks on the built default settings
   h_check gh-api-reads-allowed "read-only gh api forms stay allowed" st_check_gh_api_reads_allowed
   h_check hook-scripts-parse "every registered hook script exists and parses" st_check_hook_scripts_parse
   h_check hook-scripts-registered "every hook script is registered" st_check_hook_scripts_registered
+  h_check agents-md "AGENTS.md states the rules for AI contributors and CLAUDE.md loads it" st_check_agents_md
   h_check reader-agent "the reader sub-agent runs a cheaper model with no MCP, shell or edit tools" st_check_reader_agent
   h_check safety-hooks-fail-closed "PreToolUse safety hooks block when they fail" st_check_safety_hooks_fail_closed
   h_check onfailure-recovery "CLAUDE_SETUP_NO_ONFAILURE=1 rebuilds the settings without onFailure" st_check_onfailure_recovery

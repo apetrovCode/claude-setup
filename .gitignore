@@ -11,6 +11,8 @@
 !.gitignore
 !.gitattributes
 !README.md
+!AGENTS.md
+!CLAUDE.md
 !LICENSE
 !install.sh
 !bootstrap-linux.sh
