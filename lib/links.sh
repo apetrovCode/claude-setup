@@ -41,6 +41,7 @@ link_one() {
 
 # Hooks are not here: install_hooks copies them (see below).
 LINKED_FILES="
+claude/agents/reader.md|agents/reader.md
 claude/bin/gh-mcp-headers.sh|bin/gh-mcp-headers.sh
 claude/statusline-command.sh|statusline-command.sh
 "

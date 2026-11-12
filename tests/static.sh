@@ -195,6 +195,34 @@ st_check_onfailure_recovery() {
     || { printf 'CLAUDE_SETUP_NO_ONFAILURE=1 still leaves onFailure in the settings\n'; return 1; }
 }
 
+# The reader sub-agent type (harness Next item 7): a cheaper model and no MCP tools,
+# so a read-and-extract fan-out does not carry every connector's tool list.
+st_check_reader_agent() {
+  local f="$REPO/claude/agents/reader.md"
+  [ -f "$f" ] || { printf 'no claude/agents/reader.md\n'; return 1; }
+  python3 -I - "$f" <<'PY2'
+import re, sys
+text = open(sys.argv[1]).read()
+m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+if not m:
+    print("no frontmatter"); sys.exit(1)
+fm = {}
+for line in m.group(1).splitlines():
+    if ":" in line:
+        k, v = line.split(":", 1); fm[k.strip()] = v.strip()
+bad = []
+if fm.get("name") != "reader": bad.append("name is not reader")
+if fm.get("model") not in ("sonnet", "haiku"): bad.append("model is not sonnet or haiku")
+tools = [t.strip() for t in fm.get("tools", "").split(",") if t.strip()]
+if not tools: bad.append("no tools allowlist (an empty list inherits every tool)")
+if any(t.startswith("mcp__") for t in tools): bad.append("tools grants MCP")
+if set(tools) & {"Edit", "MultiEdit", "NotebookEdit", "Bash", "Agent"}: bad.append("tools grants edit, shell or sub-agents")
+if "mcp__*" not in fm.get("disallowedTools", ""): bad.append("disallowedTools lacks mcp__*")
+if "mcpServers" in fm: bad.append("declares mcpServers")
+print("; ".join(bad)); sys.exit(1 if bad else 0)
+PY2
+}
+
 st_check_hook_scripts_registered() {
   local f bad=""
   for f in "$REPO"/claude/hooks/*.sh; do
@@ -223,6 +251,11 @@ st_check_gitignore() {
            tests/settings-min-versions.tsv tests/fixtures/gh-api-mutations.txt \
            tests/fixtures/gh-api-reads.txt .githooks/pre-push \
            .github/workflows/ci.yml tools/harness-scan tools/harness-replay; do
+    (cd "$REPO" && git check-ignore -q --no-index "$p") && bad="$bad $p"
+  done
+  # Everything install links or copies into ~/.claude must be committable too.
+  for p in $( (. "$REPO/lib/links.sh" >/dev/null 2>&1; for l in $LINKED_FILES; do printf '%s\n' "${l%%|*}"; done) ) \
+           $(cd "$REPO" && ls claude/hooks/*.sh claude/agents/*.md 2>/dev/null); do
     (cd "$REPO" && git check-ignore -q --no-index "$p") && bad="$bad $p"
   done
   ignored="$(cd "$REPO" && git ls-files -oi --exclude-standard -- tests tools .github)"
@@ -315,6 +348,7 @@ st_rule_checks() {   # checks on the built default settings
   h_check gh-api-reads-allowed "read-only gh api forms stay allowed" st_check_gh_api_reads_allowed
   h_check hook-scripts-parse "every registered hook script exists and parses" st_check_hook_scripts_parse
   h_check hook-scripts-registered "every hook script is registered" st_check_hook_scripts_registered
+  h_check reader-agent "the reader sub-agent runs a cheaper model with no MCP, shell or edit tools" st_check_reader_agent
   h_check safety-hooks-fail-closed "PreToolUse safety hooks block when they fail" st_check_safety_hooks_fail_closed
   h_check onfailure-recovery "CLAUDE_SETUP_NO_ONFAILURE=1 rebuilds the settings without onFailure" st_check_onfailure_recovery
   h_check hooks-path-absolute "this clone's core.hooksPath is absolute, so --git-dir runs still scan" st_check_hooks_path_absolute

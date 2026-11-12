@@ -42,6 +42,8 @@
 !claude/hooks/*.sh
 !claude/bin/
 !claude/bin/*.sh
+!claude/agents/
+!claude/agents/*.md
 
 !skills/
 !skills/**

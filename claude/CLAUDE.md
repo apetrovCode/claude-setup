@@ -43,6 +43,10 @@ SessionStart, Stop, SessionEnd and PreCompact hooks. Reading it is not automatic
 
 - **Delegate wide repo sweeps to a subagent** rather than grepping a large clone set inline;
   checkpoint findings into a knowledge base or a memory note before context passes ~70%.
+- **Use the `reader` agent type for read-and-extract fan-outs** (many files, transcripts or logs in,
+  facts or counts out). It runs on Sonnet with Read, Grep, Glob and Write and no MCP connectors, so it
+  starts at a fraction of a general-purpose agent's context. Have each reader write its result to a
+  file first when the output is large.
 - **Don't re-checkpoint work I've already approved.** If I've said to fix items 3, 4 and 7, build
   and run all three — don't come back to ask before starting. Do surface: anything I've called a
   blocker pending team approval, accepting security risk on my behalf, and irreversible or
