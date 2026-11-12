@@ -32,12 +32,6 @@
       "type": "http",
       "url": "https://knowledge-mcp.global.api.aws"
     },
-    "terraform": {
-      "type": "stdio",
-      "command": "${TERRAFORM_MCP_SERVER}",
-      "args": ["stdio", "--toolsets=registry"],
-      "env": {}
-    },
     "atlassian": {
       "type": "http",
       "url": "https://mcp.atlassian.com/v1/mcp"
@@ -45,7 +39,6 @@
   },
   "needsInteractiveAuth": ["atlassian"],
   "requiresBinary": {
-    "mempalace": "mempalace-mcp",
-    "terraform": "terraform-mcp-server"
+    "mempalace": "mempalace-mcp"
   }
 }

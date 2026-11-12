@@ -22,7 +22,7 @@ detect_platform() {
 REQUIRED_TOOLS="jq git claude"
 # Optional: each one degrades a specific feature, named in the warning.
 # shellcheck disable=SC2034
-OPTIONAL_TOOLS="gh mempalace mempalace-mcp terraform-mcp-server dcg actionlint zizmor"
+OPTIONAL_TOOLS="gh mempalace mempalace-mcp dcg actionlint zizmor"
 
 check_tools() {
   local missing=""
@@ -36,14 +36,6 @@ check_tools() {
   have mempalace-mcp        || warn "mempalace-mcp not found — the mempalace MCP server will not start"
   have actionlint           || warn "actionlint not found — workflow edits are not syntax-linted"
   have zizmor               || warn "zizmor not found — workflow edits are not security-linted"
-
-  if have terraform-mcp-server; then
-    TERRAFORM_MCP_SERVER="$(command -v terraform-mcp-server)"
-    info "terraform-mcp-server: $TERRAFORM_MCP_SERVER"
-  else
-    TERRAFORM_MCP_SERVER=""
-    warn "terraform-mcp-server not found — the terraform MCP server will be skipped"
-  fi
 
   if have dcg; then
     DCG="$(command -v dcg)"
