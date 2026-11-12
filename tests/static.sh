@@ -166,6 +166,32 @@ st_check_hooks_path_absolute() {
   esac
 }
 
+# Safety hooks fail closed: with onFailure "block" a PreToolUse guard that crashes,
+# hangs or prints bad JSON blocks the call instead of letting it through
+# (code.claude.com/docs/en/hooks, 2.1.295+). The recovery build drops the key.
+ST_FAIL_CLOSED_HOOKS="no-cred-output.sh"
+
+st_check_safety_hooks_fail_closed() {
+  local h bad=""
+  for h in $ST_FAIL_CLOSED_HOOKS; do
+    jq -e --arg h "$h" '[.hooks.PreToolUse[]?.hooks[]? | select(.command | test("/" + $h)) | .onFailure == "block"] | (length > 0 and all)' \
+      "$H_TMP/settings-default.json" >/dev/null || bad="$bad $h"
+  done
+  [ -z "$bad" ] || { printf 'PreToolUse hooks without onFailure "block":%s\n' "$bad"; return 1; }
+}
+
+st_check_onfailure_recovery() {
+  local out
+  out="$(
+    CLAUDE_CONFIG_DIR="$H_TMP/cfg-recovery"; export CLAUDE_CONFIG_DIR; mkdir -p "$CLAUDE_CONFIG_DIR"
+    CLAUDE_SETUP_NO_ONFAILURE=1; export CLAUDE_SETUP_NO_ONFAILURE
+    . "$REPO/lib/common.sh"; . "$REPO/lib/merge.sh"
+    build_settings default 2>/dev/null
+  )" || { printf 'the recovery build failed\n'; return 1; }
+  printf '%s' "$out" | jq -e '[.. | objects | select(has("onFailure"))] | length == 0' >/dev/null \
+    || { printf 'CLAUDE_SETUP_NO_ONFAILURE=1 still leaves onFailure in the settings\n'; return 1; }
+}
+
 st_check_hook_scripts_registered() {
   local f bad=""
   for f in "$REPO"/claude/hooks/*.sh; do
@@ -287,6 +313,8 @@ st_rule_checks() {   # checks on the built default settings
   h_check gh-api-reads-allowed "read-only gh api forms stay allowed" st_check_gh_api_reads_allowed
   h_check hook-scripts-parse "every registered hook script exists and parses" st_check_hook_scripts_parse
   h_check hook-scripts-registered "every hook script is registered" st_check_hook_scripts_registered
+  h_check safety-hooks-fail-closed "PreToolUse safety hooks block when they fail" st_check_safety_hooks_fail_closed
+  h_check onfailure-recovery "CLAUDE_SETUP_NO_ONFAILURE=1 rebuilds the settings without onFailure" st_check_onfailure_recovery
   h_check hooks-path-absolute "this clone's core.hooksPath is absolute, so --git-dir runs still scan" st_check_hooks_path_absolute
   h_check no-cred-output-cases "no-cred-output.sh blocks credential-printing commands only" st_check_no_cred_output_cases
   if command -v claude >/dev/null 2>&1; then

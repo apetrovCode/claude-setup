@@ -57,6 +57,15 @@ build_settings() {
   merged="$(jq -s "$MERGE_PROGRAM" "${subst[@]}")" || die "settings merge failed"
   rm -f "${subst[@]}"
 
+  # Recovery: with onFailure "block", a safety hook that crashes or hangs stops every
+  # tool call it matches. `CLAUDE_SETUP_NO_ONFAILURE=1 ./install.sh install` rebuilds
+  # the settings without it; re-run plain once the hook is fixed.
+  if [ "${CLAUDE_SETUP_NO_ONFAILURE:-}" = 1 ]; then
+    merged="$(printf '%s' "$merged" | jq 'walk(if type == "object" then del(.onFailure) else . end)')" \
+      || die "could not strip onFailure"
+    warn "onFailure removed from every hook (CLAUDE_SETUP_NO_ONFAILURE=1): rebuild without it once the hook is fixed"
+  fi
+
   # Guard against the exact failure this merge exists to prevent.
   local want got
   want="$(jq '.permissions.allow | length' "$REPO/settings/base.json")"

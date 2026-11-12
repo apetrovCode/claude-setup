@@ -53,7 +53,8 @@
           {
             "type": "command",
             "command": "bash $HOME/.claude/hooks/no-cred-output.sh",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }
