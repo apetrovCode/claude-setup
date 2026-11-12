@@ -21,7 +21,10 @@ cd ~/gits/claude-setup
 | `./install.sh use <profile>` | Rebuilds `settings.json` against another profile. |
 | `./install.sh sync` | Reports drift between the live files and the repo. Changes nothing. |
 | `./install.sh doctor` | Verifies the installed state. Changes nothing. |
-| `CLAUDE_SETUP_NO_ONFAILURE=1 ./install.sh install` | Recovery: rebuilds `settings.json` without `onFailure`. The PreToolUse safety hooks carry `"onFailure": "block"`, so one that crashes or hangs blocks every Bash call it matches; this lets work continue while it is fixed. Re-run plain afterwards. |
+| `CLAUDE_SETUP_SKIP_CHECKS=1 ./install.sh install` | Installs although the checks fail. `install` normally runs the static and hooks suites first and installs nothing on a FAIL or XPASS. Each skip is appended to `~/.claude/local/harness/logs/skip-checks.log`. |
+| `CLAUDE_SETUP_SKIP_CHECKS=1 CLAUDE_SETUP_NO_ONFAILURE=1 ./install.sh install` | Recovery: rebuilds `settings.json` without `onFailure`. The PreToolUse safety hooks carry `"onFailure": "block"`, so one that crashes or hangs blocks every Bash call it matches; this lets work continue while it is fixed. Re-run plain afterwards. |
+
+Hooks are **copied** into `~/.claude/hooks`, not linked, and only after their case tables (`tests/hooks/`) pass: a link into this working tree would change with every branch switch.
 
 A dcg allowlist kept in the local layer (`dcg/allowlist.toml`) is copied over the live one on install.
 

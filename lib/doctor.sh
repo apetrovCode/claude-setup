@@ -61,6 +61,17 @@ doctor() {
   done
   [ "$broken" -eq 0 ] && ok "$total shell artifacts linked correctly"
 
+  step "Hooks"
+  local h live_h hb=0
+  for h in "$REPO"/claude/hooks/*.sh; do
+    live_h="$CLAUDE_DIR/hooks/$(basename "$h")"
+    if [ -L "$live_h" ]; then bad "$live_h is a link into a working tree; ./install.sh install copies it"; hb=$((hb + 1))
+    elif [ ! -x "$live_h" ]; then bad "$live_h missing or not executable"; hb=$((hb + 1))
+    elif ! cmp -s "$h" "$live_h"; then warn "$live_h differs from the repo (./install.sh sync shows how)"
+    fi
+  done
+  [ "$hb" -eq 0 ] && ok "hooks are executable copies"
+
   step "Skills"
   local want_skills live_skills
   want_skills="$(find "$REPO/skills" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ')"

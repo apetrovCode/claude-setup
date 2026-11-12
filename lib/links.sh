@@ -39,9 +39,8 @@ link_one() {
   return 0
 }
 
+# Hooks are not here: install_hooks copies them (see below).
 LINKED_FILES="
-claude/hooks/no-cred-output.sh|hooks/no-cred-output.sh
-claude/hooks/gha-lint.sh|hooks/gha-lint.sh
 claude/bin/gh-mcp-headers.sh|bin/gh-mcp-headers.sh
 claude/statusline-command.sh|statusline-command.sh
 "
@@ -54,7 +53,7 @@ install_links() {
     total=$((total + 1))
     link_one "$src" "$CLAUDE_DIR/$dst" && n=$((n + 1))
   done
-  chmod +x "$REPO"/claude/hooks/*.sh "$REPO"/claude/bin/*.sh "$REPO"/claude/statusline-command.sh 2>/dev/null || true
+  chmod +x "$REPO"/claude/bin/*.sh "$REPO"/claude/statusline-command.sh 2>/dev/null || true
   if [ "$n" -eq "$total" ]; then
     ok "$n shell artifacts linked"
   else
@@ -83,6 +82,39 @@ install_links() {
       bad "could not install the dcg allowlist from the local layer"
     fi
   fi
+}
+
+# Public hooks are COPIED, not linked. A link into this working tree changes the
+# moment the checkout switches branches, so an untested branch would be guarding
+# every session. They are copied only after the hooks suite passes (cmd_install
+# runs it and sets HOOKS_SUITE_RC; without it this runs the suite itself); if it
+# failed, the live hooks stay exactly as they were. Each copy lands atomically:
+# hooks run concurrently with this.
+install_hooks() {
+  local f name dest tmp n=0 total=0 rc="${HOOKS_SUITE_RC:-}"
+  if [ -z "$rc" ]; then
+    bash "$REPO/tests/run.sh" --public-only hooks >/dev/null 2>&1
+    rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    bad "hooks suite failed: live hooks left as they were (see: bash tests/run.sh hooks)"
+    return 1
+  fi
+  mkdir -p "$CLAUDE_DIR/hooks" || { bad "cannot create $CLAUDE_DIR/hooks"; return 1; }
+  for f in "$REPO"/claude/hooks/*.sh; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"; dest="$CLAUDE_DIR/hooks/$name"; total=$((total + 1))
+    [ -L "$dest" ] && rm -f "$dest"
+    if cmp -s "$f" "$dest" && [ -x "$dest" ]; then n=$((n + 1)); continue; fi
+    [ -e "$dest" ] && backup "$dest"
+    tmp="$dest.tmp.$$"
+    if cp "$f" "$tmp" && chmod 755 "$tmp" && mv -f "$tmp" "$dest"; then
+      n=$((n + 1))
+    else
+      rm -f "$tmp"; bad "could not copy $name"
+    fi
+  done
+  if [ "$n" -eq "$total" ]; then ok "$n hooks copied (hooks suite passed)"; else return 1; fi
 }
 
 install_skills() {
