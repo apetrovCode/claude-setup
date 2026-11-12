@@ -42,7 +42,6 @@ load_local_env() {
 # Replace the install-time tokens on stdin.
 subst_tokens() {
   sed -e "s|\${CLAUDE_DIR}|${CLAUDE_DIR}|g" \
-      -e "s|\${TERRAFORM_MCP_SERVER}|${TERRAFORM_MCP_SERVER:-terraform-mcp-server}|g" \
       -e "s|\${BEDROCK_AWS_PROFILE}|${BEDROCK_AWS_PROFILE:-}|g" \
       -e "s|\${GITS_DIR}|${GITS_DIR:-$HOME/gits}|g" \
       -e "s|\${JIRA_PROJECT_KEY}|${JIRA_PROJECT_KEY:-}|g"
