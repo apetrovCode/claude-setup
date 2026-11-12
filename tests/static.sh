@@ -158,10 +158,13 @@ st_check_no_cred_output_cases() {
 # commit or push run with only --git-dir (or GIT_DIR) from another directory
 # finds no hooks and skips the leak scan silently. Checked 2026-11-11.
 st_check_hooks_path_absolute() {
-  local hp
+  local hp main
   hp="$(git -C "$REPO" config --get core.hooksPath 2>/dev/null)" || return 0   # unset: CI, fresh clone
   case "$hp" in
-    /*) [ "$hp" = "$REPO/.githooks" ] || { printf 'core.hooksPath points elsewhere: not %s\n' "this clone's .githooks"; return 1; } ;;
+    /*) # A linked worktree shares the main clone's config, so the main clone's .githooks counts too.
+        main="$(cd "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd)"
+        [ "$hp" = "$REPO/.githooks" ] || [ "$hp" = "$main/.githooks" ] \
+          || { printf 'core.hooksPath points elsewhere: not %s\n' "this clone's .githooks"; return 1; } ;;
     *)  printf 'core.hooksPath is relative (%s): run  git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"\n' "$hp"; return 1 ;;
   esac
 }
@@ -292,7 +295,6 @@ static_suite() {
     h_skip rules "rule checks" "the default profile did not build"
   fi
   # These need no built settings, so they run either way.
-  h_skip hook-matcher-coverage "hook matchers cover their case tables" "hook case tables not built yet"
   h_check gitignore-readmits "test, tool and CI files are not ignored" st_check_gitignore
   if [ "${QUICK:-0}" -eq 1 ]; then
     h_skip shellcheck "shellcheck" "--quick"

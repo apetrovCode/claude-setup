@@ -146,6 +146,31 @@ register_dcg_hook() {
 
 # ---------------------------------------------------------------- commands
 
+# Install refuses to deploy what fails its own checks. The static and hooks suites
+# run first (quick mode); on a FAIL or XPASS nothing is installed.
+# CLAUDE_SETUP_SKIP_CHECKS=1 overrides that, and every use is appended to
+# ~/.claude/local/harness/logs/skip-checks.log (or this clone's git dir).
+run_prechecks() {
+  local out log dir
+  if [ "${CLAUDE_SETUP_SKIP_CHECKS:-}" = 1 ]; then
+    dir="${CLAUDE_SETUP_HARNESS_DIR:-$HOME/.claude/local/harness}/logs"
+    mkdir -p "$dir" 2>/dev/null || dir="$(git -C "$REPO" rev-parse --absolute-git-dir)/harness-logs"
+    mkdir -p "$dir" && log="$dir/skip-checks.log"
+    printf '%s\tskip-checks\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nohead)" "$*" >> "$log"
+    warn "checks skipped (CLAUDE_SETUP_SKIP_CHECKS=1); logged to $log"
+    HOOKS_SUITE_RC=0
+    return 0
+  fi
+  if out="$(bash "$REPO/tests/run.sh" --public-only --quick static hooks 2>&1)"; then
+    ok "static and hooks suites pass"
+    HOOKS_SUITE_RC=0
+    return 0
+  fi
+  printf '%s\n' "$out" | grep -E '^  (FAIL|XPASS)' | sed 's/^/  /' >&2
+  die "checks failed, nothing installed. Fix them (bash tests/run.sh static hooks), or override: CLAUDE_SETUP_SKIP_CHECKS=1 ./install.sh install (logged)"
+}
+
 cmd_install() {
   step "Platform"
   detect_platform
@@ -155,8 +180,12 @@ cmd_install() {
   fetch_local_layer
   load_local_env
 
+  step "Checks"
+  run_prechecks install
+
   step "Links"
   install_links
+  install_hooks
   install_skills
 
   step "Generated files"
@@ -238,6 +267,18 @@ cmd_sync() {
     fi
   done
   ok "link check done"
+
+  step "Hooks (copied, not linked)"
+  local h live_h drift=0
+  for h in "$REPO"/claude/hooks/*.sh; do
+    live_h="$CLAUDE_DIR/hooks/$(basename "$h")"
+    if [ -L "$live_h" ]; then
+      warn "$live_h is a link: run ./install.sh install to copy the tested hook"; drift=1
+    elif ! cmp -s "$h" "$live_h"; then
+      warn "$live_h differs from the repo"; diff -u "$h" "$live_h" | sed 's/^/    /' || true; drift=1
+    fi
+  done
+  [ "$drift" -eq 0 ] && ok "live hooks match the repo"
 }
 
 usage() {

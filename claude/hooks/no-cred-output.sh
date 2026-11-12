@@ -16,7 +16,9 @@
 # which uses it without printing it. Case table: tests/fixtures/no-cred-output.tsv.
 #
 # Exit 2 = block, reason on stderr. Exit 0 = allow (silent).
-cmd=$(jq -r '.tool_input.command // empty')
+# Unparsable input fails (exit 1) rather than passing: with onFailure "block" the
+# call is then blocked, which is the point of a fail-closed guard.
+cmd=$(jq -r '.tool_input.command // empty') || { printf 'no-cred-output: could not parse the hook input\n' >&2; exit 1; }
 [ -z "$cmd" ] && exit 0
 
 if printf '%s' "$cmd" | grep -Eq \

@@ -358,6 +358,41 @@ sf_check_no_work_tree() {
   [ -z "$bad" ] || { printf 'outside a work tree:%s\n' "${bad#;}"; return 1; }
 }
 
+# install_hooks copies hooks rather than linking them: a link into the working tree
+# changes with every branch switch. It replaces a link, backs up a differing file,
+# leaves executable regular files, and copies nothing when the hooks suite failed.
+sf_check_hooks_copied() {
+  local d out bad="" f
+  d="$(mktemp -d "$H_TMP/hookcopy.XXXXXX")" || return 1
+  mkdir -p "$d/cfg/hooks" || return 1
+  ln -s "$REPO/claude/hooks/no-cred-output.sh" "$d/cfg/hooks/no-cred-output.sh"
+  printf 'old\n' > "$d/cfg/hooks/gha-lint.sh"
+  out="$(
+    CLAUDE_CONFIG_DIR="$d/cfg"; export CLAUDE_CONFIG_DIR   # common.sh derives CLAUDE_DIR from it
+    . "$REPO/lib/common.sh"; . "$REPO/lib/links.sh"
+    BACKUP_DIR="$d/backup"; FAILURES=0; WARNINGS=0
+    [ "$CLAUDE_DIR" = "$d/cfg" ] || { echo "CLAUDE_DIR is not the temp dir"; exit 1; }
+    HOOKS_SUITE_RC=0 install_hooks 2>&1
+  )" || { printf 'install_hooks failed: %s\n' "$out"; return 1; }
+  for f in "$REPO"/claude/hooks/*.sh; do
+    f="$(basename "$f")"
+    if [ -L "$d/cfg/hooks/$f" ] || [ ! -x "$d/cfg/hooks/$f" ] || ! cmp -s "$REPO/claude/hooks/$f" "$d/cfg/hooks/$f"; then
+      bad="$bad; $f is not an executable copy of the repo file"
+    fi
+  done
+  [ -f "$d/backup/gha-lint.sh" ] || bad="$bad; the differing gha-lint.sh was not backed up"
+  printf 'old\n' > "$d/cfg/hooks/gha-lint.sh"
+  (
+    CLAUDE_CONFIG_DIR="$d/cfg"; export CLAUDE_CONFIG_DIR
+    . "$REPO/lib/common.sh"; . "$REPO/lib/links.sh"
+    BACKUP_DIR="$d/backup2"; FAILURES=0; WARNINGS=0
+    [ "$CLAUDE_DIR" = "$d/cfg" ] || exit 0
+    HOOKS_SUITE_RC=1 install_hooks >/dev/null 2>&1
+  ) && bad="$bad; install_hooks succeeded after a failed hooks suite"
+  [ "$(cat "$d/cfg/hooks/gha-lint.sh")" = old ] || bad="$bad; a hook was replaced although the hooks suite failed"
+  [ -z "$bad" ] || { printf 'copy-on-install got wrong:%s\n' "${bad#;}"; return 1; }
+}
+
 self_suite() {
   h_check hook-git-env-cleared "a hook's GIT_DIR does not redirect the suites' git -C calls" sf_check_git_env_cleared
   h_check suite-load-guard "a suite that fails to load, exits or reports nothing fails the run" sf_check_suite_load_guard
@@ -370,4 +405,5 @@ self_suite() {
   h_check missing-word-list "a leak scan without a private-word list says so" sf_check_missing_word_list
   h_check prepush-log-private "pre-push logs are private, inside the clone, and pruned" sf_check_prepush_log
   h_check no-work-tree "outside a work tree the scanner and pre-push fail closed" sf_check_no_work_tree
+  h_check hooks-copied-on-install "install copies tested hooks, never links them" sf_check_hooks_copied
 }

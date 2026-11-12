@@ -1,0 +1,4 @@
+{"id":"bad-json","why":"unparsable input must fail (onFailure \"block\" then blocks), not pass silently","stdin_raw":"not json","expect":1}
+{"id":"no-command","why":"a Bash call without a command has nothing to check","stdin":{"tool_name":"Bash","tool_input":{}},"expect":0}
+{"id":"powershell-token","why":"the matcher includes PowerShell; a printed token blocks there too","stdin":{"tool_name":"PowerShell","tool_input":{"command":"gh auth token"}},"expect":2}
+{"id":"block-message","why":"the block names MemPalace as the reason","stdin":{"tool_name":"Bash","tool_input":{"command":"aws configure export-credentials --profile p"}},"expect":2,"stderr_has":"MemPalace"}
