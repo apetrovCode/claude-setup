@@ -66,6 +66,23 @@ install_links() {
     chmod +x "$LOCAL_DIR"/hooks/*.sh 2>/dev/null || true
     info "local hooks: $(find "$LOCAL_DIR/hooks" -name '*.sh' | wc -l | tr -d ' ')"
   fi
+
+  # A dcg allowlist kept in the local layer replaces the live one: copied, not linked,
+  # with the replaced file backed up. dcg reads it from the platform config directory.
+  if [ -f "$LOCAL_DIR/dcg/allowlist.toml" ]; then
+    local live
+    case "$(uname -s)" in
+      Darwin) live="$HOME/Library/Application Support/dcg/allowlist.toml" ;;
+      *)      live="${XDG_CONFIG_HOME:-$HOME/.config}/dcg/allowlist.toml" ;;
+    esac
+    if cmp -s "$LOCAL_DIR/dcg/allowlist.toml" "$live"; then
+      info "dcg allowlist: managed copy already live"
+    elif mkdir -p "$(dirname "$live")" && backup "$live" && cp "$LOCAL_DIR/dcg/allowlist.toml" "$live"; then
+      ok "dcg allowlist installed from the local layer"
+    else
+      bad "could not install the dcg allowlist from the local layer"
+    fi
+  fi
 }
 
 install_skills() {

@@ -21,6 +21,9 @@ cd ~/gits/claude-setup
 | `./install.sh use <profile>` | Rebuilds `settings.json` against another profile. |
 | `./install.sh sync` | Reports drift between the live files and the repo. Changes nothing. |
 | `./install.sh doctor` | Verifies the installed state. Changes nothing. |
+| `CLAUDE_SETUP_NO_ONFAILURE=1 ./install.sh install` | Recovery: rebuilds `settings.json` without `onFailure`. The PreToolUse safety hooks carry `"onFailure": "block"`, so one that crashes or hangs blocks every Bash call it matches; this lets work continue while it is fixed. Re-run plain afterwards. |
+
+A dcg allowlist kept in the local layer (`dcg/allowlist.toml`) is copied over the live one on install.
 
 ## How it is put together
 
