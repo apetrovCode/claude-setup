@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""harness-scan: the harness's measuring tool (harness plan step 5). Read-only; counts only.
+
+    harness-scan [--config FILE] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--out FILE]
+                 [--state FILE] [--update-state]
+    harness-scan --self-test
+    harness-scan --make-fixture DIR      (writes a planted tree, its scan.json and planted.txt)
+
+It reads Claude Code transcripts (~/.claude/projects by default) and the secret stores named
+in the config, and prints one JSON document of counts:
+
+  sessions   main transcripts with tool calls in the window, their session-hours, and how
+             many were left out as build sessions
+  friction   denials by kind (dcg rule ids, hook scripts, settings, auto-mode), AWS credential
+             refusals, aws-preflight blocks, AWS session-hours, compactions
+  upkeep     session-hours in sessions whose working directory is under an upkeep prefix
+  secrets    per store and pattern: files with a match, and those changed in the window
+  canaries   CLI versions seen, denial kinds it does not recognise
+
+It never prints a matched secret, a command argument or message text: rule ids, hook script
+names and counts only. Session-hours are the sum of gaps under 15 minutes between a
+session's records. Records are de-duplicated by uuid (resumed sessions copy earlier ones).
+
+Config (JSON, private, e.g. ~/.claude/local/harness/scan.json; every key optional):
+  projects_root        transcripts root (default ~/.claude/projects)
+  upkeep_prefixes      working-directory prefixes whose sessions count as harness upkeep
+  build_sessions_file  file of session ids (one per line) left out of friction and upkeep
+  secret_stores        {name: {"path": dir, "glob": "*.jsonl"}}; default: transcripts, memory
+  never_walk           path prefixes the secret scan must not enter
+  seen_state_file      salted hashes of the secret-shape values already seen (0600). "New" in
+                       the output means a value not in it; --update-state adds this run's values
+
+Go/no-go condition (d) reads secrets.<store>.new_distinct_secret_shapes: values first seen since
+the last --update-state run. The access-key-id pattern is an identifier and is left out.
+"""
+import collections
+import datetime
+import fnmatch
+import hashlib
+import hmac
+import json
+import os
+import re
+import sys
+import tempfile
+
+GAP = 900  # seconds; longer gaps between records are not counted as session time
+
+SECRET_PATTERNS = {
+    "aws-access-key-id": r"(AKIA|ASIA)[0-9A-Z]{12}([0-9A-DF-Z][0-9A-Z]{3}|E[0-9A-WYZ][0-9A-Z]{2})",
+    "github-token": r"gh[posu]_[A-Za-z0-9]{36,}",
+    "github-fine-grained": r"github_pat_[A-Za-z0-9_]{40,}",
+    "slack-token": r"xox[abprs]-[0-9]{8,}-",
+    "npm-token": r"npm_[A-Za-z0-9]{36}",
+    "jfrog-reference-token": r"cmVmdGtu[A-Za-z0-9+/=]{30,}",
+    "jfrog-api-key": r"AKCp[0-9A-Za-z]{40,}",
+    "atlassian-api-token": r"ATATT3x[A-Za-z0-9_=-]{20,}",
+    "anthropic-key": r"sk-ant-[A-Za-z0-9_-]{20,}",
+    "pem-private-key": r"BEGIN [A-Z ]*PRIVATE KEY",
+}
+# Identifiers, not secrets on their own (an access key id without its secret key): reported,
+# but left out of the secret-shape totals that go/no-go condition (d) reads.
+ID_ONLY = {"aws-access-key-id"}
+AWS_CRED = re.compile(
+    r"An error occurred \((ExpiredToken|InvalidClientTokenId|UnrecognizedClientException|InvalidToken)\)"
+    r"|Token has expired and refresh failed|Error loading SSO Token|Error when retrieving token from sso"
+    r"|Unable to locate credentials|SSO session .{0,40}expired"
+    r"|security token included in the request is (expired|invalid)")
+RULE = re.compile(r"Rule:\s*([A-Za-z0-9_.:\-]+)")
+HOOK_SCRIPT = re.compile(r"([A-Za-z0-9_\-]+\.sh)")
+AUTO_CAT = re.compile(r"^\s*\[([A-Za-z /\-]+)\]")
+AWS_HEADS = ("aws", "terraform", "terragrunt", "assume")
+KNOWN_DENIALS = {"permission-rule", "automode-blocked", "user-rejected"}
+
+
+def parse_ts(s):
+    try:
+        return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def day_ts(s):
+    return datetime.datetime.fromisoformat(s + "T00:00:00+00:00").timestamp()
+
+
+def text_of(block):
+    c = block.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and isinstance(x.get("text"), str))
+    return ""
+
+
+def command_heads(cmd):
+    """Program names in command position, for the AWS-session test. Never returned to output."""
+    heads = set()
+    for seg in re.split(r"[;&|\n]+", cmd or ""):
+        toks = seg.strip().split()
+        while toks and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", toks[0]):
+            toks = toks[1:]
+        if toks:
+            heads.add(os.path.basename(toks[0]))
+    return heads
+
+
+def main_transcripts(root):
+    for proj in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        pd = os.path.join(root, proj)
+        if not os.path.isdir(pd):
+            continue
+        for f in sorted(os.listdir(pd)):
+            if f.endswith(".jsonl"):
+                yield f[:-6], os.path.join(pd, f)
+
+
+def hours(stamps):
+    stamps = sorted(stamps)
+    return sum(b - a for a, b in zip(stamps, stamps[1:]) if 0 < b - a < GAP) / 3600.0
+
+
+def scan_sessions(cfg, since, until):
+    root = os.path.expanduser(cfg.get("projects_root", "~/.claude/projects"))
+    prefixes = [os.path.expanduser(p).rstrip("/") for p in cfg.get("upkeep_prefixes", [])]
+    build = set()
+    bf = cfg.get("build_sessions_file")
+    if bf and os.path.exists(os.path.expanduser(bf)):
+        build = {l.strip() for l in open(os.path.expanduser(bf)) if l.strip() and not l.startswith("#")}
+    seen = set()
+    S = collections.Counter()
+    dcg_rules, hooks, unknown, versions = (collections.Counter() for _ in range(4))
+    session_hours = upkeep_hours = aws_hours = 0.0
+    per_session_aws = collections.Counter()
+    upkeep_sessions = excluded = 0
+    for sid, path in main_transcripts(root):
+        stamps, cwds, has_tool, aws_session = [], set(), False, False
+        sess = collections.Counter()
+        s_rules, s_hooks, s_unknown = collections.Counter(), collections.Counter(), collections.Counter()
+        try:
+            fh = open(path, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict):
+                    continue
+                u = r.get("uuid")
+                if u is not None:
+                    if u in seen:
+                        continue
+                    seen.add(u)
+                ts = parse_ts(r.get("timestamp")) if r.get("timestamp") else None
+                if ts is None or not (since <= ts < until):
+                    continue
+                stamps.append(ts)
+                if r.get("cwd"):
+                    cwds.add(r["cwd"])
+                if r.get("version"):
+                    versions[r["version"]] += 1
+                if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
+                    sess["compactions"] += 1
+                    continue
+                m = r.get("message")
+                content = m.get("content") if isinstance(m, dict) else None
+                if not isinstance(content, list):
+                    continue
+                tdk = r.get("toolDenialKind")
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "tool_use":
+                        has_tool = True
+                        inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                        if b.get("name") == "Bash" and command_heads(inp.get("command")) & set(AWS_HEADS):
+                            aws_session = True
+                        continue
+                    if b.get("type") != "tool_result":
+                        continue
+                    t = text_of(b)
+                    if "BLOCKED by aws-preflight" in t or "aws-preflight: that command failed" in t:
+                        sess["aws_preflight_blocks"] += 1
+                    if tdk:
+                        if tdk == "permission-rule":
+                            if "dcg" in t[:400].lower() or RULE.search(t):
+                                rm = RULE.search(t)
+                                s_rules[rm.group(1) if rm else "(no rule id)"] += 1
+                                sess["dcg_blocks"] += 1
+                            elif "hook" in t[:200].lower():
+                                hm = HOOK_SCRIPT.search(t[:600])
+                                s_hooks[hm.group(1) if hm else "(unnamed)"] += 1
+                                sess["hook_blocks"] += 1
+                            elif t.lstrip().startswith("Permission to use"):
+                                sess["settings_denials"] += 1
+                            else:
+                                sess["other_denials"] += 1
+                        elif tdk == "automode-blocked":
+                            sess["automode_blocks"] += 1
+                        elif tdk == "user-rejected":
+                            sess["user_rejections"] += 1
+                        else:
+                            s_unknown[str(tdk)[:40]] += 1
+                    elif AWS_CRED.search(t):
+                        sess["aws_refusals"] += 1
+        if not stamps:
+            continue
+        h = hours(stamps)
+        if sid in build:
+            excluded += 1
+            continue
+        if any(c == p or c.startswith(p + "/") for c in cwds for p in prefixes):
+            upkeep_hours += h
+            upkeep_sessions += 1
+        if not has_tool:
+            continue
+        S["main_with_tools"] += 1
+        session_hours += h
+        S.update(sess)
+        dcg_rules.update(s_rules)
+        hooks.update(s_hooks)
+        unknown.update(s_unknown)
+        friction = sess["aws_refusals"] + sess["aws_preflight_blocks"]
+        if aws_session:
+            S["aws_sessions"] += 1
+            aws_hours += h
+        if friction:
+            per_session_aws[sid] = friction
+    n = S["main_with_tools"]
+    events = S["aws_refusals"] + S["aws_preflight_blocks"]
+    return {
+        "sessions": {"main_with_tools": n, "session_hours": round(session_hours, 2),
+                     "excluded_build_sessions": excluded},
+        "friction": {
+            "dcg_blocks": S["dcg_blocks"], "dcg_rules": dict(dcg_rules.most_common()),
+            "hook_blocks": S["hook_blocks"], "hook_scripts": dict(hooks.most_common()),
+            "settings_denials": S["settings_denials"], "automode_blocks": S["automode_blocks"],
+            "user_rejections": S["user_rejections"], "other_denials": S["other_denials"],
+            "aws_refusals": S["aws_refusals"], "aws_preflight_blocks": S["aws_preflight_blocks"],
+            "aws_friction_events": events,
+            "aws_friction_per_main_session": round(events / n, 3) if n else None,
+            "sessions_with_5plus_aws_friction": sum(1 for v in per_session_aws.values() if v >= 5),
+            "aws_sessions": S["aws_sessions"], "aws_session_hours": round(aws_hours, 2),
+            "aws_friction_per_aws_session_hour": round(events / aws_hours, 3) if aws_hours else None,
+            "compactions": S["compactions"],
+        },
+        "upkeep": {"session_hours": round(upkeep_hours, 2), "sessions": upkeep_sessions},
+        "canaries": {"cli_versions": dict(versions.most_common(8)),
+                     "unknown_denial_kinds": dict(unknown)},
+    }
+
+
+def load_state(path):
+    """Salted hashes of every secret-shape value seen so far. Never the values themselves."""
+    if path and os.path.exists(path):
+        st = json.load(open(path))
+        return st, set(st.get("hashes", []))
+    return {"salt": os.urandom(32).hex(), "hashes": []}, set()
+
+
+def save_state(path, st, hashes):
+    st["hashes"] = sorted(hashes)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(st, f)
+
+
+def scan_secrets(cfg, since, until, state=None, update=False):
+    st, seen = load_state(state)
+    salt = bytes.fromhex(st["salt"])
+    added = set()
+    root = os.path.expanduser(cfg.get("projects_root", "~/.claude/projects"))
+    stores = cfg.get("secret_stores") or {
+        "transcripts": {"path": root, "glob": "*.jsonl"},
+        "memory": {"path": root, "glob": "*/memory/*.md"},
+    }
+    never = [os.path.expanduser(p).rstrip("/") for p in cfg.get("never_walk", [])]
+    pats = {k: re.compile(v.encode()) for k, v in SECRET_PATTERNS.items()}
+    out = {}
+    for name, store in stores.items():
+        base = os.path.expanduser(store["path"])
+        glob = store.get("glob", "*")
+        res = {k: {"files": 0, "files_changed_in_window": 0, "matches": 0} for k in pats}
+        distinct = set()
+        files = 0
+        for dp, dns, fns in os.walk(base):
+            if any(dp == n or dp.startswith(n + "/") for n in never):
+                dns[:] = []
+                continue
+            for fn in fns:
+                fp = os.path.join(dp, fn)
+                rel = os.path.relpath(fp, base)
+                if not (fnmatch.fnmatch(fn, glob) or fnmatch.fnmatch(rel, glob)):
+                    continue
+                try:
+                    data = open(fp, "rb").read()
+                    mt = os.path.getmtime(fp)
+                except OSError:
+                    continue
+                files += 1
+                for k, rx in pats.items():
+                    n = 0
+                    for mt_ in rx.finditer(data):
+                        n += 1
+                        if k not in ID_ONLY:
+                            distinct.add(hmac.new(salt, k.encode() + b"\0" + mt_.group(0), hashlib.sha256).hexdigest()[:32])
+                    if n:
+                        res[k]["files"] += 1
+                        res[k]["matches"] += n
+                        if since <= mt < until:
+                            res[k]["files_changed_in_window"] += 1
+        hits = {k: v for k, v in res.items() if v["files"]}
+        out[name] = {"files_scanned": files, "hits": hits,
+                     "secret_shape_files": sum(v["files"] for k, v in hits.items() if k not in ID_ONLY),
+                     "secret_shape_matches": sum(v["matches"] for k, v in hits.items() if k not in ID_ONLY),
+                     "secret_shape_files_changed_in_window":
+                         sum(v["files_changed_in_window"] for k, v in hits.items() if k not in ID_ONLY),
+                     "distinct_secret_shapes": len(distinct),
+                     "new_distinct_secret_shapes": len(distinct - seen)}
+        added |= distinct - seen
+    out["_state"] = {"tracked": bool(state), "new_distinct_total": len(added), "updated": bool(state and update)}
+    if state and update:
+        save_state(state, st, seen | added)
+    return out
+
+
+def run(cfg, since, until, state=None, update=False):
+    s0, s1 = day_ts(since), day_ts(until)
+    doc = {"schema": 1, "tool": "harness-scan",
+           "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "window": {"since": since, "until": until}}
+    doc.update(scan_sessions(cfg, s0, s1))
+    doc["secrets"] = scan_secrets(cfg, s0, s1, state=state, update=update)
+    return doc
+
+
+# --- planted fixture and self-test ------------------------------------------
+
+def make_fixture(d):
+    """A tree with known counts. Fakes are assembled here so no literal one sits in the repo."""
+    proj = os.path.join(d, "projects", "-work-repo")
+    os.makedirs(os.path.join(proj, "memory"), exist_ok=True)
+    fake_gh = "gh" + "p_" + "Q" * 36
+    fake_pem = "-----" + "BEGIN " + "RSA PRIVATE KEY" + "-----"
+    secret_arg = "--secret-arg-" + "zqvx"
+    message = "planted message text " + "zqvx"
+    T = lambda m, s: f"2026-06-01T10:{m:02d}:{s:02d}Z"
+
+    def rec(uuid, ts, **kw):
+        r = {"uuid": uuid, "timestamp": ts, "cwd": "/work/upkeep-repo", "version": "9.9.9"}
+        r.update(kw)
+        return json.dumps(r)
+
+    def use(uid, cmd):
+        return {"role": "assistant", "content": [{"type": "tool_use", "id": uid, "name": "Bash",
+                                                   "input": {"command": cmd}}]}
+
+    def result(uid, text):
+        return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": uid, "content": text}]}
+
+    a = [
+        rec("a1", T(0, 0), type="user", message={"role": "user", "content": message}),
+        rec("a2", T(1, 0), type="assistant", message=use("t1", "aws s3 ls --profile p " + secret_arg)),
+        rec("a3", T(2, 0), type="user", message=result("t1", "Error when retrieving token from sso: Token has expired and refresh failed")),
+        rec("a4", T(3, 0), type="assistant", message=use("t2", "git reset --hard " + secret_arg)),
+        rec("a5", T(4, 0), type="user", toolDenialKind="permission-rule",
+            message=result("t2", "BLOCKED by dcg\nRule: core.git:reset-hard")),
+        rec("a6", T(5, 0), type="user", message=result("t9", "PreToolUse:Bash hook error: [bash x/aws-preflight.sh]: BLOCKED by aws-preflight: expired")),
+        rec("a7", T(6, 0), type="user", message=result("t8", "token " + fake_gh)),
+        rec("a8", T(7, 0), type="system", subtype="compact_boundary"),
+        rec("a9", T(8, 0), type="user", toolDenialKind="permission-rule",
+            message=result("t7", "PreToolUse:Bash hook error: [bash x/no-cred-output.sh]: BLOCKED")),
+        rec("a10", T(9, 0), type="user", toolDenialKind="brand-new-kind", message=result("t6", "x")),
+        rec("a11", "2026-06-01T11:30:00Z", type="user", message={"role": "user", "content": message}),
+        rec("a3", T(2, 0), type="user", message=result("t1", "Error when retrieving token from sso: Token has expired and refresh failed")),
+    ]
+    b = [rec("b1", T(0, 0), type="user", message={"role": "user", "content": message}),
+         rec("b2", T(1, 0), type="user", message={"role": "user", "content": message})]
+    c = [rec("c1", T(0, 0), type="assistant", message=use("x1", "ls")),
+         rec("c2", T(10, 0), type="assistant", message=use("x2", "ls"))]
+    open(os.path.join(proj, "sess-a.jsonl"), "w").write("\n".join(a) + "\n")
+    open(os.path.join(proj, "sess-b.jsonl"), "w").write("\n".join(b) + "\n")
+    open(os.path.join(proj, "sess-c.jsonl"), "w").write("\n".join(c) + "\n")
+    open(os.path.join(proj, "memory", "note.md"), "w").write("key\n" + fake_pem + "\nabc\n")
+    open(os.path.join(d, "build-sessions.txt"), "w").write("sess-c\n")
+    json.dump({"projects_root": os.path.join(d, "projects"), "upkeep_prefixes": ["/work/upkeep-repo"],
+               "build_sessions_file": os.path.join(d, "build-sessions.txt")},
+              open(os.path.join(d, "scan.json"), "w"))
+    open(os.path.join(d, "planted.txt"), "w").write("\n".join([fake_gh, fake_pem, secret_arg, message]) + "\n")
+
+
+EXPECT = {
+    ("sessions", "main_with_tools"): 1,           # a (b has no tools, c is a build session)
+    ("sessions", "excluded_build_sessions"): 1,
+    ("sessions", "session_hours"): 0.15,           # a: 9 one-minute gaps; the 81-minute gap is dropped
+    ("friction", "dcg_blocks"): 1,
+    ("friction", "hook_blocks"): 1,
+    ("friction", "aws_refusals"): 1,                # the duplicate uuid is counted once
+    ("friction", "aws_preflight_blocks"): 1,
+    ("friction", "aws_friction_events"): 2,
+    ("friction", "aws_sessions"): 1,
+    ("friction", "aws_session_hours"): 0.15,
+    ("friction", "compactions"): 1,
+    ("upkeep", "sessions"): 2,                      # a and b; c is a build session
+}
+
+
+def self_test():
+    bad = []
+    with tempfile.TemporaryDirectory() as d:
+        make_fixture(d)
+        cfg = json.load(open(os.path.join(d, "scan.json")))
+        doc = run(cfg, "2026-01-01", "2027-01-01")
+        for (sec, key), want in EXPECT.items():
+            got = doc[sec][key]
+            if got != want:
+                bad.append(f"{sec}.{key}: got {got}, want {want}")
+        if doc["friction"]["dcg_rules"] != {"core.git:reset-hard": 1}:
+            bad.append("dcg rule ids not counted by rule")
+        if doc["friction"]["hook_scripts"] != {"no-cred-output.sh": 1}:
+            bad.append("hook blocks not counted by script")
+        if doc["canaries"]["unknown_denial_kinds"] != {"brand-new-kind": 1}:
+            bad.append("an unknown denial kind was not surfaced")
+        hits = doc["secrets"]["transcripts"]["hits"]
+        if hits.get("github-token", {}).get("files") != 1:
+            bad.append("planted GitHub token shape not found in transcripts")
+        if doc["secrets"]["transcripts"]["secret_shape_files"] != 1 or doc["secrets"]["transcripts"]["secret_shape_matches"] != 1:
+            bad.append("secret-shape totals wrong for transcripts")
+        if doc["secrets"]["memory"]["hits"].get("pem-private-key", {}).get("files") != 1:
+            bad.append("planted private key header not found in memory")
+        # "New" means a value not in the seen-state, not a file whose mtime moved.
+        state = os.path.join(d, "seen.json")
+        first = run(cfg, "2026-01-01", "2027-01-01", state=state, update=True)
+        again = run(cfg, "2026-01-01", "2027-01-01", state=state, update=False)
+        if first["secrets"]["transcripts"].get("new_distinct_secret_shapes") != 1:
+            bad.append("a first scan does not report the planted token as new")
+        if again["secrets"]["transcripts"].get("new_distinct_secret_shapes") != 0:
+            bad.append("a value already in the seen-state is reported as new again")
+        if any(p in open(state).read() for p in [l.strip() for l in open(os.path.join(d, "planted.txt")) if l.strip()]):
+            bad.append("the seen-state holds a planted value instead of a hash")
+        planted = [l.strip() for l in open(os.path.join(d, "planted.txt")) if l.strip()]
+        text = json.dumps(doc)
+        if any(p in text for p in planted):
+            bad.append("the output repeats planted text")
+    if bad:
+        print("harness-scan self-test FAILED:\n  " + "\n  ".join(bad))
+        return 1
+    print("harness-scan self-test: ok")
+    return 0
+
+
+def main(argv):
+    if "--self-test" in argv:
+        return self_test()
+    if "--make-fixture" in argv:
+        make_fixture(argv[argv.index("--make-fixture") + 1])
+        return 0
+    opt = lambda k, d=None: argv[argv.index(k) + 1] if k in argv else d
+    cfg_path = opt("--config", os.path.expanduser("~/.claude/local/harness/scan.json"))
+    cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+    today = datetime.date.today()
+    since = opt("--since", (today - datetime.timedelta(days=14)).isoformat())
+    until = opt("--until", today.isoformat())
+    state = opt("--state", cfg.get("seen_state_file"))
+    state = os.path.expanduser(state) if state else None
+    doc = run(cfg, since, until, state=state, update="--update-state" in argv)
+    text = json.dumps(doc, indent=2, sort_keys=False)
+    if opt("--out"):
+        os.makedirs(os.path.dirname(opt("--out")) or ".", exist_ok=True)
+        fd = os.open(opt("--out"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text + "\n")
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

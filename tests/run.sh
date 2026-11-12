@@ -7,7 +7,8 @@
 #         self     the harness testing its own gates (CI-safe)
 #         private  ~/.claude/local/harness/checks.sh, when present
 #         hooks    each public hook against its case table (CI-safe)
-#         dcg, scanner  not built yet
+#         scanner  tools/harness-scan against its planted fixture (CI-safe)
+#         dcg      not built yet
 # --public-only  skip the private suite and private expected-fail list (CI)
 # --quick        skip the slow checks (shellcheck)
 # --live         reserved for suites that need the real HOME and installed binaries
@@ -77,7 +78,10 @@ for s in $SUITES; do
       h_run_suite suite-hooks "$REPO/tests/hooks.sh" hooks_suite
       ;;
     dcg)     h_suite dcg;     h_skip dcg "dcg corpus" "not built yet" ;;
-    scanner) h_suite scanner; h_skip scanner "scanner self-test" "not built yet" ;;
+    scanner)
+      h_suite "scanner (public)"
+      h_run_suite suite-scanner "$REPO/tests/scanner.sh" scanner_suite
+      ;;
     *)       printf 'unknown suite: %s\n' "$s" >&2; exit 2 ;;
   esac
 done
