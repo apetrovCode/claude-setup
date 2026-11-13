@@ -37,7 +37,20 @@ PY
   [ -z "$leaked" ] || { printf 'the scan output repeats planted text:\n%s\n' "$leaked"; return 1; }
 }
 
+# tools/harness-replay: past shell commands through dcg under two configs. Needs dcg,
+# so it is skipped where dcg is absent (CI); the planted history fixes every count.
+sc_check_replay_self_test() {
+  [ -f "$REPO/tools/harness-replay" ] || { printf 'no tools/harness-replay\n'; return 1; }
+  local out
+  out="$(python3 -I "$REPO/tools/harness-replay" --self-test 2>&1)" || { printf '%s\n' "$out" | tail -n 20; return 1; }
+}
+
 scanner_suite() {
   h_check harness-scan-self-test "harness-scan reproduces the planted counts" sc_check_self_test
   h_check harness-scan-counts-only "harness-scan output carries no planted secret, argument or message text" sc_check_counts_only
+  if command -v dcg >/dev/null 2>&1; then
+    h_check harness-replay-self-test "harness-replay reproduces the planted matrix, flips, protected flips and fidelity" sc_check_replay_self_test
+  else
+    h_skip harness-replay-self-test "harness-replay against its planted history" "no dcg on this machine"
+  fi
 }
