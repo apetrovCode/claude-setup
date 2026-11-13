@@ -2,7 +2,7 @@
 """harness-scan: the harness's measuring tool (harness plan step 5). Read-only; counts only.
 
     harness-scan [--config FILE] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--out FILE]
-                 [--state FILE] [--update-state]
+                 [--state FILE] [--update-state] [--no-secrets]
     harness-scan --self-test
     harness-scan --make-fixture DIR      (writes a planted tree, its scan.json and planted.txt)
 
@@ -15,6 +15,8 @@ in the config, and prints one JSON document of counts:
              refusals, aws-preflight blocks, AWS session-hours, compactions
   upkeep     session-hours in sessions whose working directory is under an upkeep prefix
   secrets    per store and pattern: files with a match, and those changed in the window
+  shell_tools  calls per tool that can run commands or code (Bash, PowerShell, terminal, osascript,
+             code-execution and browser-JavaScript tools, AWS call tools)
   canaries   CLI versions seen, denial kinds it does not recognise
 
 It never prints a matched secret, a command argument or message text: rule ids, hook script
@@ -71,6 +73,8 @@ HOOK_SCRIPT = re.compile(r"([A-Za-z0-9_\-]+\.sh)")
 AUTO_CAT = re.compile(r"^\s*\[([A-Za-z /\-]+)\]")
 AWS_HEADS = ("aws", "terraform", "terragrunt", "assume")
 KNOWN_DENIALS = {"permission-rule", "automode-blocked", "user-rejected"}
+# Tools that can run commands or code. Config key shell_tool_pattern overrides it.
+SHELL_TOOLS = r"^(Bash|PowerShell)$|run_in_terminal|osascript|shell|execute_code|execute_javascript|javascript_tool|call_aws"
 
 
 def parse_ts(s):
@@ -129,7 +133,8 @@ def scan_sessions(cfg, since, until):
         build = {l.strip() for l in open(os.path.expanduser(bf)) if l.strip() and not l.startswith("#")}
     seen = set()
     S = collections.Counter()
-    dcg_rules, hooks, unknown, versions = (collections.Counter() for _ in range(4))
+    dcg_rules, hooks, unknown, versions, shell_tools = (collections.Counter() for _ in range(5))
+    shell_rx = re.compile(cfg.get("shell_tool_pattern", SHELL_TOOLS))
     session_hours = upkeep_hours = aws_hours = 0.0
     per_session_aws = collections.Counter()
     upkeep_sessions = excluded = 0
@@ -137,6 +142,7 @@ def scan_sessions(cfg, since, until):
         stamps, cwds, has_tool, aws_session = [], set(), False, False
         sess = collections.Counter()
         s_rules, s_hooks, s_unknown = collections.Counter(), collections.Counter(), collections.Counter()
+        s_shell = collections.Counter()
         try:
             fh = open(path, encoding="utf-8", errors="replace")
         except OSError:
@@ -175,6 +181,8 @@ def scan_sessions(cfg, since, until):
                         continue
                     if b.get("type") == "tool_use":
                         has_tool = True
+                        if shell_rx.search(b.get("name") or ""):
+                            s_shell[b.get("name")] += 1
                         inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                         if b.get("name") == "Bash" and command_heads(inp.get("command")) & set(AWS_HEADS):
                             aws_session = True
@@ -223,6 +231,7 @@ def scan_sessions(cfg, since, until):
         dcg_rules.update(s_rules)
         hooks.update(s_hooks)
         unknown.update(s_unknown)
+        shell_tools.update(s_shell)
         friction = sess["aws_refusals"] + sess["aws_preflight_blocks"]
         if aws_session:
             S["aws_sessions"] += 1
@@ -248,6 +257,7 @@ def scan_sessions(cfg, since, until):
             "compactions": S["compactions"],
         },
         "upkeep": {"session_hours": round(upkeep_hours, 2), "sessions": upkeep_sessions},
+        "shell_tools": dict(shell_tools.most_common()),
         "canaries": {"cli_versions": dict(versions.most_common(8)),
                      "unknown_denial_kinds": dict(unknown)},
     }
@@ -328,13 +338,14 @@ def scan_secrets(cfg, since, until, state=None, update=False):
     return out
 
 
-def run(cfg, since, until, state=None, update=False):
+def run(cfg, since, until, state=None, update=False, no_secrets=False):
     s0, s1 = day_ts(since), day_ts(until)
     doc = {"schema": 1, "tool": "harness-scan",
            "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "window": {"since": since, "until": until}}
     doc.update(scan_sessions(cfg, s0, s1))
-    doc["secrets"] = scan_secrets(cfg, s0, s1, state=state, update=update)
+    if not no_secrets:
+        doc["secrets"] = scan_secrets(cfg, s0, s1, state=state, update=update)
     return doc
 
 
@@ -371,6 +382,8 @@ def make_fixture(d):
             message=result("t2", "BLOCKED by dcg\nRule: core.git:reset-hard")),
         rec("a6", T(5, 0), type="user", message=result("t9", "PreToolUse:Bash hook error: [bash x/aws-preflight.sh]: BLOCKED by aws-preflight: expired")),
         rec("a7", T(6, 0), type="user", message=result("t8", "token " + fake_gh)),
+        rec("a7b", T(6, 30), type="assistant", message={"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t5", "name": "mcp__terminal__run_in_terminal", "input": {"command": "ls"}}]}),
         rec("a8", T(7, 0), type="system", subtype="compact_boundary"),
         rec("a9", T(8, 0), type="user", toolDenialKind="permission-rule",
             message=result("t7", "PreToolUse:Bash hook error: [bash x/no-cred-output.sh]: BLOCKED")),
@@ -423,6 +436,8 @@ def self_test():
             bad.append("dcg rule ids not counted by rule")
         if doc["friction"]["hook_scripts"] != {"no-cred-output.sh": 1}:
             bad.append("hook blocks not counted by script")
+        if doc.get("shell_tools") != {"Bash": 2, "mcp__terminal__run_in_terminal": 1}:
+            bad.append(f"shell-capable tool calls: got {doc.get('shell_tools')}")
         if doc["canaries"]["unknown_denial_kinds"] != {"brand-new-kind": 1}:
             bad.append("an unknown denial kind was not surfaced")
         hits = doc["secrets"]["transcripts"]["hits"]
@@ -467,7 +482,7 @@ def main(argv):
     until = opt("--until", today.isoformat())
     state = opt("--state", cfg.get("seen_state_file"))
     state = os.path.expanduser(state) if state else None
-    doc = run(cfg, since, until, state=state, update="--update-state" in argv)
+    doc = run(cfg, since, until, state=state, update="--update-state" in argv, no_secrets="--no-secrets" in argv)
     text = json.dumps(doc, indent=2, sort_keys=False)
     if opt("--out"):
         os.makedirs(os.path.dirname(opt("--out")) or ".", exist_ok=True)
