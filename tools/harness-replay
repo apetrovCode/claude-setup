@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""harness-replay: past shell commands through dcg under two configs (harness plan step 5).
+
+    harness-replay --old DIR --new DIR [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+                   [--config FILE] [--out FILE]
+    harness-replay show ID [--since ...] [--until ...]    (a terminal only: refuses inside Claude Code)
+    harness-replay --self-test
+
+Each DIR holds a dcg `allowlist.toml` and, optionally, a `config.toml` (default: the user's
+~/.config/dcg/config.toml). Each side runs `dcg hook --batch` under its own temporary HOME, so
+neither the live allowlist nor dcg's history is read or written.
+
+Commands come from Bash and PowerShell tool calls in the transcripts (main sessions and
+sub-agents), de-duplicated by tool-use id and held in memory only. A command with a secret shape
+in it is counted and skipped, never replayed.
+
+Output is counts and opaque ids only, never command text:
+  matrix           old decision -> new decision
+  flips_by_rule    for each dcg rule id, how many commands it stopped blocking or started blocking
+  protected_flips  deny -> allow flips that matter: rule ids under core.git:push-force*,
+                   core.git:reset-hard, cloud.aws, terraform or secrets.*, and any core.filesystem or
+                   core.git flip whose command names no scratch path (scratchpad, /tmp/, $TMPDIR, mktemp)
+  fidelity         how many recorded dcg outcomes the OLD side reproduces (k of n): a dcg block in
+                   the transcript should replay as deny, a command that ran as allow; commands stopped
+                   by something else (a hook, auto mode, the user) are left out
+  ids              a keyed hash per flipped command; `show ID` prints that command, on a terminal
+
+Config keys (JSON, the same private file harness-scan reads; all optional):
+  projects_root    transcripts root (default ~/.claude/projects)
+  replay_key_file  key for the ids (default ~/.claude/local/harness/replay.key, created 0600)
+"""
+import collections
+import datetime
+import glob
+import hashlib
+import hmac
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+sys.dont_write_bytecode = True  # importing harness-scan must not leave tools/__pycache__
+_here = os.path.dirname(os.path.abspath(__file__))
+_loader = importlib.machinery.SourceFileLoader("harness_scan", os.path.join(_here, "harness-scan"))
+_spec = importlib.util.spec_from_loader("harness_scan", _loader)
+hs = importlib.util.module_from_spec(_spec)
+_loader.exec_module(hs)
+
+SECRETS = [re.compile(v) for v in hs.SECRET_PATTERNS.values()]
+SHELL_TOOLS = {"Bash", "PowerShell"}
+PROTECTED_PREFIXES = ("core.git:push-force", "core.git:reset-hard", "cloud.aws", "terraform", "secrets.")
+SCRATCH = re.compile(r"scratchpad|/tmp/|\$\{?TMPDIR|mktemp")
+
+
+def extract(root, since, until):
+    """Shell commands with their recorded dcg outcome: allow, deny:<rule>, or other."""
+    uses, outcome, seen = {}, {}, set()
+    for f in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
+        try:
+            fh = open(f, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if '"tool_use"' not in line and '"tool_result"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                u = r.get("uuid")
+                if u is not None:
+                    if u in seen:
+                        continue
+                    seen.add(u)
+                m = r.get("message")
+                content = m.get("content") if isinstance(m, dict) else None
+                if not isinstance(content, list):
+                    continue
+                ts = hs.parse_ts(r.get("timestamp")) if r.get("timestamp") else None
+                tdk = r.get("toolDenialKind")
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "tool_use" and b.get("name") in SHELL_TOOLS:
+                        cmd = (b.get("input") or {}).get("command")
+                        if isinstance(cmd, str) and cmd.strip() and ts is not None and since <= ts < until:
+                            uses.setdefault(b.get("id"), (b.get("name"), cmd))
+                    elif b.get("type") == "tool_result":
+                        t = hs.text_of(b)
+                        if tdk == "permission-rule" and ("dcg" in t[:400].lower() or hs.RULE.search(t)):
+                            rm = hs.RULE.search(t)
+                            outcome[b.get("tool_use_id")] = "deny:" + (rm.group(1) if rm else "?")
+                        elif tdk:
+                            outcome[b.get("tool_use_id")] = "other"
+                        else:
+                            outcome.setdefault(b.get("tool_use_id"), "allow")
+    rows = []
+    for tid, (tool, cmd) in uses.items():
+        rows.append({"tool": tool, "command": cmd, "recorded": outcome.get(tid, "other")})
+    return rows
+
+
+def run_side(side_dir, rows):
+    """dcg decisions for every row under this side's config, in a temporary HOME."""
+    with tempfile.TemporaryDirectory() as h:
+        if sys.platform == "darwin":
+            al = os.path.join(h, "Library", "Application Support", "dcg")
+        else:
+            al = os.path.join(h, ".config", "dcg")
+        os.makedirs(al, exist_ok=True)
+        os.makedirs(os.path.join(h, ".config", "dcg"), exist_ok=True)
+        os.makedirs(os.path.join(h, "work"), exist_ok=True)
+        cfg = os.path.join(side_dir, "config.toml")
+        if not os.path.exists(cfg):
+            cfg = os.path.expanduser("~/.config/dcg/config.toml")
+        if os.path.exists(cfg):
+            shutil.copy(cfg, os.path.join(h, ".config", "dcg", "config.toml"))
+        shutil.copy(os.path.join(side_dir, "allowlist.toml"), os.path.join(al, "allowlist.toml"))
+        env = {k: v for k, v in os.environ.items() if k not in ("XDG_CONFIG_HOME", "DCG_CONFIG")}
+        env["HOME"] = h
+        env["HARNESS_REPLAY"] = "1"
+        data = "".join(json.dumps({"tool_name": r["tool"], "tool_input": {"command": r["command"]}}) + "\n"
+                       for r in rows)
+        p = subprocess.run(["dcg", "hook", "--batch", "--robot", "--continue-on-error"], input=data,
+                           capture_output=True, text=True, cwd=os.path.join(h, "work"), env=env)
+        out = {}
+        for line in p.stdout.splitlines():
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(o, dict) and "index" in o:
+                out[o["index"]] = ("deny:" + o.get("rule_id", "?")) if o.get("decision") == "deny" else "allow"
+        if len(out) != len(rows):
+            raise SystemExit(f"dcg returned {len(out)} decisions for {len(rows)} commands (rc {p.returncode})")
+        return [out[i] for i in range(len(rows))]
+
+
+def key(path):
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(os.urandom(32).hex())
+    return bytes.fromhex(open(path).read().strip())
+
+
+def cid(k, cmd):
+    return hmac.new(k, cmd.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def replay(cfg, since, until, old, new, keyfile):
+    root = os.path.expanduser(cfg.get("projects_root", "~/.claude/projects"))
+    rows = extract(root, hs.day_ts(since), hs.day_ts(until))
+    skipped = sum(1 for r in rows if any(rx.search(r["command"]) for rx in SECRETS))
+    rows = [r for r in rows if not any(rx.search(r["command"]) for rx in SECRETS)]
+    a, b = run_side(old, rows), run_side(new, rows)
+    k = key(keyfile)
+    matrix = collections.Counter()
+    flips = collections.defaultdict(lambda: {"to_allow": 0, "to_deny": 0})
+    protected, flipped_ids = [], []
+    fid_k = fid_n = 0
+    for r, o, n in zip(rows, a, b):
+        od, nd = o.split(":")[0], n.split(":")[0]
+        matrix[f"{od}->{nd}"] += 1
+        if r["recorded"] != "other":
+            fid_n += 1
+            fid_k += (r["recorded"].split(":")[0] == od)
+        if od == nd:
+            continue
+        rule = (o if od == "deny" else n).split(":", 1)[1]
+        flips[rule]["to_allow" if nd == "allow" else "to_deny"] += 1
+        i = cid(k, r["command"])
+        flipped_ids.append({"id": i, "rule": rule, "to": nd})
+        if nd == "allow" and (rule.startswith(PROTECTED_PREFIXES) or
+                              (rule.startswith(("core.filesystem", "core.git")) and not SCRATCH.search(r["command"]))):
+            protected.append({"id": i, "rule": rule})
+    return {
+        "schema": 1, "tool": "harness-replay",
+        "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "window": {"since": since, "until": until},
+        "dcg_version": dcg_version(),
+        "commands_replayed": len(rows), "skipped_secret_shaped": skipped,
+        "matrix": dict(matrix), "flips_by_rule": dict(flips),
+        "protected_flips": {"count": len(protected), "items": protected},
+        "fidelity": {"reproduced": fid_k, "recorded": fid_n,
+                     "share": round(fid_k / fid_n, 4) if fid_n else None},
+        "flipped": flipped_ids,
+    }
+
+
+def dcg_version():
+    try:
+        return subprocess.run(["dcg", "--version"], capture_output=True, text=True).stdout.split()[-1]
+    except (OSError, IndexError):
+        return None
+
+
+def show(cfg, ident, since, until, keyfile):
+    if os.environ.get("CLAUDECODE"):
+        print("show refuses to run inside Claude Code: command text would land in a transcript. "
+              "Run it in your own terminal.", file=sys.stderr)
+        return 2
+    root = os.path.expanduser(cfg.get("projects_root", "~/.claude/projects"))
+    k = key(keyfile)
+    for r in extract(root, hs.day_ts(since), hs.day_ts(until)):
+        if cid(k, r["command"]) == ident:
+            print(r["command"])
+            return 0
+    print("no command with that id in the window", file=sys.stderr)
+    return 1
+
+
+# --- planted history and self-test -------------------------------------------
+
+def make_fixture(d):
+    proj = os.path.join(d, "projects", "-work-repo")
+    os.makedirs(proj, exist_ok=True)
+    fake = "gh" + "p_" + "Q" * 36
+    cmds = {
+        "u1": ("git status", "ran"),
+        "u2": ("git reset --hard HEAD~1", "dcg:core.git:reset-hard"),
+        "u3": ('cat a > "$d/out.txt"', "dcg:core.filesystem:redirect-truncate-dynamic-path"),
+        "u4": ('echo x > "$TMPDIR/out.txt"', "ran"),
+        "u5": ('curl -H "Authorization: token ' + fake + '" https://example.invalid', "ran"),
+        "u6": ("ls -la", "automode"),
+    }
+    recs = []
+    for i, (uid, (cmd, how)) in enumerate(cmds.items()):
+        ts = f"2026-06-01T10:{i:02d}:00Z"
+        recs.append({"uuid": "a" + uid, "timestamp": ts, "type": "assistant",
+                     "message": {"role": "assistant", "content": [
+                         {"type": "tool_use", "id": uid, "name": "Bash", "input": {"command": cmd}}]}})
+        res = {"uuid": "r" + uid, "timestamp": ts, "type": "user",
+               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": uid,
+                                                         "content": "ok"}]}}
+        if how.startswith("dcg:"):
+            res["toolDenialKind"] = "permission-rule"
+            res["message"]["content"][0]["content"] = "BLOCKED by dcg\nRule: " + how[4:]
+        elif how == "automode":
+            res["toolDenialKind"] = "automode-blocked"
+        recs.append(res)
+    recs.append(recs[0])  # a resumed session copies an earlier record: counted once
+    open(os.path.join(proj, "s.jsonl"), "w").write("\n".join(json.dumps(r) for r in recs) + "\n")
+    for side, body in (("old", ""), ("new", '[[allow]]\nrule = "core.filesystem:redirect-truncate-dynamic-path"\n'
+                                           'reason = "self-test"\nadded_by = "self-test"\n'
+                                           'added_at = "2026-01-01T00:00:00Z"\n')):
+        os.makedirs(os.path.join(d, side), exist_ok=True)
+        open(os.path.join(d, side, "allowlist.toml"), "w").write(body)
+    return [c for c, _ in cmds.values()]
+
+
+def self_test():
+    bad = []
+    with tempfile.TemporaryDirectory() as d:
+        planted = make_fixture(d)
+        cfg = {"projects_root": os.path.join(d, "projects")}
+        doc = replay(cfg, "2026-01-01", "2027-01-01", os.path.join(d, "old"), os.path.join(d, "new"),
+                     os.path.join(d, "replay.key"))
+        want = {
+            "commands_replayed": 5, "skipped_secret_shaped": 1,
+            "matrix": {"allow->allow": 2, "deny->deny": 1, "deny->allow": 2},
+            "flips_by_rule": {"core.filesystem:redirect-truncate-dynamic-path": {"to_allow": 2, "to_deny": 0}},
+        }
+        for k_, v in want.items():
+            if doc[k_] != v:
+                bad.append(f"{k_}: got {doc[k_]}, want {v}")
+        if doc["protected_flips"]["count"] != 1:
+            bad.append(f"protected flips: got {doc['protected_flips']['count']}, want 1 (the write outside scratch)")
+        if (doc["fidelity"]["reproduced"], doc["fidelity"]["recorded"]) != (3, 4):
+            bad.append(f"fidelity: got {doc['fidelity']}, want 3 of 4")
+        if len({f["id"] for f in doc["flipped"]}) != 2:
+            bad.append("flipped commands do not carry two distinct ids")
+        text = json.dumps(doc)
+        if any(p in text for p in planted):
+            bad.append("the output repeats a command")
+        os.environ["CLAUDECODE"] = "1"
+        if show(cfg, doc["flipped"][0]["id"], "2026-01-01", "2027-01-01", os.path.join(d, "replay.key")) != 2:
+            bad.append("show did not refuse inside Claude Code")
+    if bad:
+        print("harness-replay self-test FAILED:\n  " + "\n  ".join(bad))
+        return 1
+    print("harness-replay self-test: ok")
+    return 0
+
+
+def main(argv):
+    if "--self-test" in argv:
+        return self_test()
+    opt = lambda k, d=None: argv[argv.index(k) + 1] if k in argv else d
+    cfg_path = opt("--config", os.path.expanduser("~/.claude/local/harness/scan.json"))
+    cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+    keyfile = cfg.get("replay_key_file", "~/.claude/local/harness/replay.key")
+    today = datetime.date.today()
+    since = opt("--since", (today - datetime.timedelta(days=90)).isoformat())
+    until = opt("--until", (today + datetime.timedelta(days=1)).isoformat())
+    if argv and argv[0] == "show":
+        return show(cfg, argv[1], since, until, keyfile)
+    if not (opt("--old") and opt("--new")):
+        print(__doc__)
+        return 2
+    doc = replay(cfg, since, until, opt("--old"), opt("--new"), keyfile)
+    text = json.dumps(doc, indent=2)
+    if opt("--out"):
+        fd = os.open(opt("--out"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text + "\n")
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
